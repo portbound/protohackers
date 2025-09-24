@@ -1,0 +1,6 @@
+services:
+  smoke-test:
+    image: portbound/protohackers:smoke-test
+
+    ports:
+      - "5001:8080"
