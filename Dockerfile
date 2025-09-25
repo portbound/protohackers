@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY . .
 
-ARG CHALLENGE_NAME=smoke-test
+ARG CHALLENGE_NAME=prime-time
 
 RUN go build -o /app/main ./cmd/${CHALLENGE_NAME}
 
