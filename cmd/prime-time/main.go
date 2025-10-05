@@ -1,17 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
-	"errors"
-	"io"
 	"log"
 	"math"
 	"net"
 )
 
 type Request struct {
-	Method string      `json:"method"`
-	Number json.Number `json:"number"`
+	Method string   `json:"method"`
+	Number *float64 `json:"number"`
 }
 
 type Response struct {
@@ -19,52 +18,41 @@ type Response struct {
 	Prime  bool   `json:"prime"`
 }
 
-type MalformedResponse struct {
-	Error string `json:"error"`
-}
+type MalformedResponse struct{}
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	decoder := json.NewDecoder(conn)
+	scanner := bufio.NewScanner(conn)
 	encoder := json.NewEncoder(conn)
 
-	for {
-
+	for scanner.Scan() {
+		line := scanner.Bytes()
 		var req Request
-		if err := decoder.Decode(&req); err != nil {
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			encoder.Encode(&MalformedResponse{Error: err.Error()})
+		if err := json.Unmarshal(line, &req); err != nil {
+			encoder.Encode(&MalformedResponse{})
 			return
 		}
 
-		if req.Method != "isPrime" || req.Number == "" { // checking req.Number may be redundant here? I dont think we can decode an empty string anyway
-			encoder.Encode(&MalformedResponse{Error: "nope"})
+		if req.Method != "isPrime" || req.Number == nil {
+			encoder.Encode(&MalformedResponse{})
 			return
 		}
 
-		_, err := req.Number.Float64()
-		if err != nil {
-			encoder.Encode(&MalformedResponse{Error: err.Error()})
-			return
-		}
-
-		var isPrime bool
-		if n, err := req.Number.Int64(); err != nil {
-			isPrime = false
+		if *req.Number != math.Trunc(*req.Number) {
+			encoder.Encode(&Response{
+				Method: "isPrime",
+				Prime:  false,
+			})
 		} else {
-			isPrime = checkIsPrime(int(n))
+			encoder.Encode(&Response{
+				Method: "isPrime",
+				Prime:  checkIsPrime(int64(*req.Number)),
+			})
 		}
-
-		_ = encoder.Encode(&Response{
-			Method: "isPrime",
-			Prime:  isPrime,
-		})
 	}
 }
 
-func checkIsPrime(n int) bool {
+func checkIsPrime(n int64) bool {
 	if n <= 1 {
 		return false
 	}
@@ -75,8 +63,8 @@ func checkIsPrime(n int) bool {
 		return false
 	}
 
-	limit := int(math.Sqrt(float64(n)))
-	for i := 3; i <= limit; i += 2 {
+	limit := int64(math.Sqrt(float64(n)))
+	for i := int64(3); i <= limit; i += 2 {
 		if n%i == 0 {
 			return false
 		}
