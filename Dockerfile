@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY . .
 
-ARG CHALLENGE_NAME=prime-time
+ARG CHALLENGE_NAME=means-to-an-end
 
 RUN go build -o /app/main ./cmd/${CHALLENGE_NAME}
 
