@@ -33,12 +33,12 @@ func (c *client) queryMeanPrice(minTime, maxTime int32) int32 {
 		return 0
 	}
 
-	var total int32
+	var total int
 	for _, num := range prices {
-		total += num
+		total += int(num)
 	}
 
-	return total / int32(len(prices))
+	return int32(total / len(prices))
 }
 
 func handleConnection(conn net.Conn) {
@@ -78,7 +78,7 @@ func handleConnection(conn net.Conn) {
 				log.Fatalf("failed to write to connection: %v", err)
 			}
 		default:
-			// fmt.Printf("invalid type char, got %v, %v\n", buf[0], buf)
+			fmt.Printf("invalid type char, got %c, %v\n", buf[0], buf)
 		}
 	}
 }
