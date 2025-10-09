@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
+	"time"
 )
 
 type client struct {
@@ -15,17 +18,19 @@ type client struct {
 func (c *client) insertMessage(timestamp, price int32) {
 	if _, ok := c.messages[timestamp]; !ok {
 		c.messages[timestamp] = price
-		return
 	}
-	// behavior undefined
 }
 
-func (c *client) queryMean(minTime, maxTime int32) int {
+func (c *client) queryMeanPrice(minTime, maxTime int32) int32 {
 	var prices []int32
 	for t := range c.messages {
 		if minTime <= t && t <= maxTime {
-			prices = append(prices, t)
+			prices = append(prices, c.messages[t])
 		}
+	}
+
+	if len(prices) == 0 {
+		return 0
 	}
 
 	var total int32
@@ -33,7 +38,7 @@ func (c *client) queryMean(minTime, maxTime int32) int {
 		total += num
 	}
 
-	return int(total) / len(prices)
+	return total / int32(len(prices))
 }
 
 func handleConnection(conn net.Conn) {
@@ -44,25 +49,36 @@ func handleConnection(conn net.Conn) {
 	}
 
 	for {
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		buf := make([]byte, 9)
-		_, err := conn.Read(buf)
+		_, err := io.ReadFull(conn, buf)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return
 			}
-			log.Fatalf("failed to read from connection: %v", err)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return
+			}
+			fmt.Printf("failed to read from connection: %v", err)
+			return
 		}
 
-		fint32 := int32(binary.BigEndian.Uint32(buf[1:4]))
-		sint32 := int32(binary.BigEndian.Uint32(buf[5:8]))
+		fint32 := int32(binary.BigEndian.Uint32(buf[1:5]))
+		sint32 := int32(binary.BigEndian.Uint32(buf[5:]))
 
 		switch byte(buf[0]) {
 		case 'I':
 			c.insertMessage(fint32, sint32)
 		case 'Q':
-			c.queryMean(fint32, sint32)
+			mean := c.queryMeanPrice(fint32, sint32)
+
+			buf := make([]byte, 4)
+			binary.BigEndian.PutUint32(buf, uint32(mean))
+			if _, err := conn.Write(buf); err != nil {
+				log.Fatalf("failed to write to connection: %v", err)
+			}
 		default:
-			// undefined behavior
+			// fmt.Printf("invalid type char, got %v, %v\n", buf[0], buf)
 		}
 	}
 }
@@ -73,6 +89,7 @@ func main() {
 		log.Fatalf("failed to start listener: %v", err)
 	}
 	defer listener.Close()
+	log.Println("listening on port 8080")
 
 	for {
 		conn, err := listener.Accept()
