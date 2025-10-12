@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -23,14 +24,15 @@ type client struct {
 }
 
 func (r *room) connect(conn net.Conn) error {
-	if _, err := conn.Write([]byte("Welcome to budgetchat! What shall I call you?")); err != nil {
+	if _, err := conn.Write([]byte("Welcome to budgetchat! What shall I call you?\n")); err != nil {
 		return err
 	}
 
-	username, err := bufio.NewReader(conn).ReadString('\n')
+	input, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
 		return err
 	}
+	username := strings.TrimRight(input, "\n")
 
 	// OPTIONAL
 	if len(username) > 16 {
@@ -48,14 +50,21 @@ func (r *room) connect(conn net.Conn) error {
 		return errors.New("username must be unique")
 	}
 
+	r.broadcast(fmt.Sprintf("* %s has entered the room", username), nil)
+
 	var users []string
 	for _, username := range r.clients {
 		users = append(users, username)
 	}
 
-	r.broadcast(fmt.Sprintf("* %s has entered the room", username))
+	var message string
+	if len(users) > 0 {
+		message = "* The room contains: " + strings.Join(users, ",")
+	} else {
+		message = "* The room is empty"
+	}
 
-	if _, err = conn.Write([]byte("* The room contains: " + strings.Join(users, ","))); err != nil {
+	if _, err = conn.Write([]byte(message)); err != nil {
 		return err
 	}
 
@@ -68,19 +77,37 @@ func (r *room) connect(conn net.Conn) error {
 }
 
 func (r *room) disconnect(conn net.Conn) {
-	r.disconnections <- conn
+	// r.disconnections <- conn
+	// idk maybe this works? We might just wanna do a select
+	mu := sync.Mutex{}
+	mu.Lock()
+	delete(r.clients, conn)
+	mu.Unlock()
 }
 
-func (r *room) broadcast(message string) {
+// revisit this - it works, but feels too nested
+func (r *room) broadcast(message string, conn net.Conn) {
+	for c := range r.clients {
+		if c != conn {
+			go func(cn net.Conn) {
+				if _, err := cn.Write([]byte(message)); err != nil {
+					fmt.Printf("failed to write to connection: %v", err)
+				}
+			}(c)
+		}
+	}
 }
 
 func handleRoom(room *room) {
-	select {
-	case client := <-room.connections:
-		room.clients[client.conn] = client.username
-	case client := <-room.disconnections:
-		delete(room.clients, client)
-	case <-room.broadcasts:
+	// not sure if we need to handle some sort of kill signal for the loop
+	for {
+		select {
+		case client := <-room.connections:
+			room.clients[client.conn] = client.username
+		case client := <-room.disconnections:
+			delete(room.clients, client)
+		case <-room.broadcasts:
+		}
 	}
 }
 
@@ -107,7 +134,10 @@ func main() {
 	fmt.Println("listening on port :8080")
 
 	room := room{
-		clients: make(map[net.Conn]string),
+		clients:        make(map[net.Conn]string),
+		connections:    make(chan *client),
+		disconnections: make(chan net.Conn),
+		broadcasts:     make(chan string),
 	}
 
 	go handleRoom(&room)
