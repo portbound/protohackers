@@ -12,117 +12,140 @@ import (
 )
 
 type room struct {
-	clients        map[net.Conn]string
-	connections    chan *client
-	disconnections chan net.Conn
-	broadcasts     chan string
+	clients       map[net.Conn]string
+	broadcastChan chan *msg
+	clientChan    chan *client
+	mu            sync.Mutex
 }
 
 type client struct {
 	conn     net.Conn
 	username string
+	isActive bool
 }
 
-func (r *room) connect(conn net.Conn) error {
-	if _, err := conn.Write([]byte("Welcome to budgetchat! What shall I call you?\n")); err != nil {
-		return err
+type msg struct {
+	body string
+	conn net.Conn
+}
+
+func (r *room) connect(conn net.Conn) (string, error) {
+	if _, err := conn.Write([]byte("Welcome to budgetchat! What shall I call you?\n> ")); err != nil {
+		return "", err
 	}
 
 	input, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
-		return err
+		return "", err
 	}
 	username := strings.TrimRight(input, "\n")
 
 	// OPTIONAL
 	if len(username) > 16 {
-		return errors.New("username must be less than 16 chars")
+		return "", errors.New("username must be less than 16 chars")
 	}
 
 	for _, char := range username {
 		if !unicode.IsLetter(char) && !unicode.IsDigit(char) {
-			return errors.New("username must be alphanumeric")
+			return "", errors.New("username must be alphanumeric")
 		}
 	}
 
 	// OPTIONAL
-	if _, ok := r.clients[conn]; ok {
-		return errors.New("username must be unique")
-	}
+	// TODO remove locks
+	// r.mu.Lock()
+	// if _, ok := r.clients[conn]; ok {
+	// 	return "", errors.New("username must be unique")
+	// }
+	// r.mu.Unlock()
 
-	r.broadcast(fmt.Sprintf("* %s has entered the room", username), nil)
-
-	var users []string
-	for _, username := range r.clients {
-		users = append(users, username)
-	}
-
-	var message string
-	if len(users) > 0 {
-		message = "* The room contains: " + strings.Join(users, ",")
-	} else {
-		message = "* The room is empty"
-	}
-
-	if _, err = conn.Write([]byte(message)); err != nil {
-		return err
-	}
-
-	r.connections <- &client{
+	r.clientChan <- &client{
 		conn:     conn,
 		username: username,
+		isActive: true,
 	}
 
-	return nil
+	r.broadcastChan <- &msg{
+		body: fmt.Sprintf("\n* %s has entered the room\n", username),
+		conn: nil,
+	}
+
+	// var users []string
+	// // TODO remove locks
+	// r.mu.Lock()
+	// for _, u := range r.clients {
+	// 	if u != username {
+	// 		users = append(users, username)
+	// 	}
+	// }
+	// r.mu.Unlock()
+
+	var message string
+	if len(r.clients) > 0 {
+		message = fmt.Sprintf("\n* The room contains: %s\n", strings.Join(users, ", "))
+	} else {
+		message = "\n* The room is empty\n"
+	}
+
+	if _, err := conn.Write([]byte(message)); err != nil {
+		return "", err
+	}
+
+	return username, nil
 }
 
-func (r *room) disconnect(conn net.Conn) {
-	// r.disconnections <- conn
-	// idk maybe this works? We might just wanna do a select
-	mu := sync.Mutex{}
-	mu.Lock()
-	delete(r.clients, conn)
-	mu.Unlock()
-}
-
-// revisit this - it works, but feels too nested
-func (r *room) broadcast(message string, conn net.Conn) {
-	for c := range r.clients {
-		if c != conn {
-			go func(cn net.Conn) {
-				if _, err := cn.Write([]byte(message)); err != nil {
-					fmt.Printf("failed to write to connection: %v", err)
-				}
-			}(c)
-		}
+func (r *room) disconnect(client *client) {
+	r.clientChan <- client
+	r.broadcastChan <- &msg{
+		body: fmt.Sprintf("* %s has left the room\n", client.username),
+		conn: nil,
 	}
 }
 
 func handleRoom(room *room) {
-	// not sure if we need to handle some sort of kill signal for the loop
 	for {
 		select {
-		case client := <-room.connections:
-			room.clients[client.conn] = client.username
-		case client := <-room.disconnections:
-			delete(room.clients, client)
-		case <-room.broadcasts:
+		case client := <-room.clientChan:
+			if client.isActive {
+				room.clients[client.conn] = client.username
+			} else {
+				delete(room.clients, client.conn)
+			}
+		case msg := <-room.broadcastChan:
+			for c := range room.clients {
+				if c != msg.conn {
+					go func(cn net.Conn) {
+						if _, err := cn.Write([]byte(msg.body)); err != nil {
+							fmt.Printf("failed to write to connection: %v", err)
+						}
+					}(c)
+				}
+			}
 		}
 	}
 }
 
 func handleConnection(conn net.Conn, room *room) {
-	defer room.disconnect(conn)
 	defer conn.Close()
 
-	if err := room.connect(conn); err != nil {
+	username, err := room.connect(conn)
+	if err != nil {
 		return
 	}
+	defer room.disconnect(&client{
+		conn:     conn,
+		username: username,
+		isActive: false,
+	})
 
-	for {
-		// select to send/receive from broadcasts
-		// need some way to not wait forever though, or at least accept some kind of signal that client DC'd
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		room.broadcastChan <- &msg{
+			body: fmt.Sprintf("[%s] %s\n", username, scanner.Text()),
+			conn: conn,
+		}
 	}
+
 }
 
 func main() {
@@ -134,10 +157,10 @@ func main() {
 	fmt.Println("listening on port :8080")
 
 	room := room{
-		clients:        make(map[net.Conn]string),
-		connections:    make(chan *client),
-		disconnections: make(chan net.Conn),
-		broadcasts:     make(chan string),
+		broadcastChan: make(chan *msg),
+		clients:       make(map[net.Conn]string),
+		clientChan:    make(chan *client),
+		mu:            sync.Mutex{},
 	}
 
 	go handleRoom(&room)
