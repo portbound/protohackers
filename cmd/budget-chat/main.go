@@ -14,6 +14,7 @@ import (
 type room struct {
 	clients       map[net.Conn]string
 	broadcastChan chan *msg
+	welcomeChan   chan net.Conn
 	clientChan    chan *client
 	mu            sync.Mutex
 }
@@ -40,7 +41,6 @@ func (r *room) connect(conn net.Conn) (string, error) {
 	}
 	username := strings.TrimRight(input, "\n")
 
-	// OPTIONAL
 	if len(username) > 16 {
 		return "", errors.New("username must be less than 16 chars")
 	}
@@ -51,14 +51,6 @@ func (r *room) connect(conn net.Conn) (string, error) {
 		}
 	}
 
-	// OPTIONAL
-	// TODO remove locks
-	// r.mu.Lock()
-	// if _, ok := r.clients[conn]; ok {
-	// 	return "", errors.New("username must be unique")
-	// }
-	// r.mu.Unlock()
-
 	r.clientChan <- &client{
 		conn:     conn,
 		username: username,
@@ -67,28 +59,7 @@ func (r *room) connect(conn net.Conn) (string, error) {
 
 	r.broadcastChan <- &msg{
 		body: fmt.Sprintf("\n* %s has entered the room\n", username),
-		conn: nil,
-	}
-
-	// var users []string
-	// // TODO remove locks
-	// r.mu.Lock()
-	// for _, u := range r.clients {
-	// 	if u != username {
-	// 		users = append(users, username)
-	// 	}
-	// }
-	// r.mu.Unlock()
-
-	var message string
-	if len(r.clients) > 0 {
-		message = fmt.Sprintf("\n* The room contains: %s\n", strings.Join(users, ", "))
-	} else {
-		message = "\n* The room is empty\n"
-	}
-
-	if _, err := conn.Write([]byte(message)); err != nil {
-		return "", err
+		conn: conn,
 	}
 
 	return username, nil
@@ -112,14 +83,31 @@ func handleRoom(room *room) {
 				delete(room.clients, client.conn)
 			}
 		case msg := <-room.broadcastChan:
-			for c := range room.clients {
-				if c != msg.conn {
-					go func(cn net.Conn) {
-						if _, err := cn.Write([]byte(msg.body)); err != nil {
+			for conn := range room.clients {
+				if conn != msg.conn {
+					go func(c net.Conn) {
+						if _, err := c.Write([]byte(msg.body)); err != nil {
 							fmt.Printf("failed to write to connection: %v", err)
 						}
-					}(c)
+					}(conn)
 				}
+			}
+		case conn := <-room.welcomeChan:
+			var users []string
+			for c := range room.clients {
+				if conn != c {
+					users = append(users, room.clients[c])
+				}
+			}
+
+			var welcomeMsg string
+			if len(users) > 0 {
+				welcomeMsg = "* The room contains: " + strings.Join(users, ", ") + "\n"
+			} else {
+				welcomeMsg = "* The room is empty\n"
+			}
+			if _, err := conn.Write([]byte(welcomeMsg)); err != nil {
+				// TODO do something here?
 			}
 		}
 	}
@@ -137,6 +125,8 @@ func handleConnection(conn net.Conn, room *room) {
 		username: username,
 		isActive: false,
 	})
+
+	room.welcomeChan <- conn
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
@@ -160,6 +150,7 @@ func main() {
 		broadcastChan: make(chan *msg),
 		clients:       make(map[net.Conn]string),
 		clientChan:    make(chan *client),
+		welcomeChan:   make(chan net.Conn),
 		mu:            sync.Mutex{},
 	}
 
