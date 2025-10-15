@@ -7,16 +7,14 @@ import (
 	"log"
 	"net"
 	"strings"
-	"sync"
 	"unicode"
 )
 
 type room struct {
-	clients       map[net.Conn]string
-	broadcastChan chan *msg
-	welcomeChan   chan net.Conn
-	clientChan    chan *client
-	mu            sync.Mutex
+	clients      map[net.Conn]string
+	broadcasts   chan *msg
+	joinEvents   chan net.Conn
+	clientEvents chan *client
 }
 
 type client struct {
@@ -31,7 +29,7 @@ type msg struct {
 }
 
 func (r *room) connect(conn net.Conn) (string, error) {
-	if _, err := conn.Write([]byte("Welcome to budgetchat! What shall I call you?\n> ")); err != nil {
+	if _, err := conn.Write([]byte("Welcome to budgetchat! What shall I call you?\n")); err != nil {
 		return "", err
 	}
 
@@ -51,14 +49,14 @@ func (r *room) connect(conn net.Conn) (string, error) {
 		}
 	}
 
-	r.clientChan <- &client{
+	r.clientEvents <- &client{
 		conn:     conn,
 		username: username,
 		isActive: true,
 	}
 
-	r.broadcastChan <- &msg{
-		body: fmt.Sprintf("\n* %s has entered the room\n", username),
+	r.broadcasts <- &msg{
+		body: fmt.Sprintf("* %s has entered the room\n", username),
 		conn: conn,
 	}
 
@@ -66,8 +64,8 @@ func (r *room) connect(conn net.Conn) (string, error) {
 }
 
 func (r *room) disconnect(client *client) {
-	r.clientChan <- client
-	r.broadcastChan <- &msg{
+	r.clientEvents <- client
+	r.broadcasts <- &msg{
 		body: fmt.Sprintf("* %s has left the room\n", client.username),
 		conn: nil,
 	}
@@ -76,13 +74,13 @@ func (r *room) disconnect(client *client) {
 func handleRoom(room *room) {
 	for {
 		select {
-		case client := <-room.clientChan:
+		case client := <-room.clientEvents:
 			if client.isActive {
 				room.clients[client.conn] = client.username
 			} else {
 				delete(room.clients, client.conn)
 			}
-		case msg := <-room.broadcastChan:
+		case msg := <-room.broadcasts:
 			for conn := range room.clients {
 				if conn != msg.conn {
 					go func(c net.Conn) {
@@ -92,7 +90,7 @@ func handleRoom(room *room) {
 					}(conn)
 				}
 			}
-		case conn := <-room.welcomeChan:
+		case conn := <-room.joinEvents:
 			var users []string
 			for c := range room.clients {
 				if conn != c {
@@ -126,11 +124,11 @@ func handleConnection(conn net.Conn, room *room) {
 		isActive: false,
 	})
 
-	room.welcomeChan <- conn
+	room.joinEvents <- conn
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
-		room.broadcastChan <- &msg{
+		room.broadcasts <- &msg{
 			body: fmt.Sprintf("[%s] %s\n", username, scanner.Text()),
 			conn: conn,
 		}
@@ -147,11 +145,10 @@ func main() {
 	fmt.Println("listening on port :8080")
 
 	room := room{
-		broadcastChan: make(chan *msg),
-		clients:       make(map[net.Conn]string),
-		clientChan:    make(chan *client),
-		welcomeChan:   make(chan net.Conn),
-		mu:            sync.Mutex{},
+		broadcasts:   make(chan *msg),
+		clients:      make(map[net.Conn]string),
+		clientEvents: make(chan *client),
+		joinEvents:   make(chan net.Conn),
 	}
 
 	go handleRoom(&room)
