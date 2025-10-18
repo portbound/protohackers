@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY . .
 
-ARG CHALLENGE_NAME=budget-chat
+ARG CHALLENGE_NAME=unusual-db-program
 
 RUN go build -o /app/main ./cmd/${CHALLENGE_NAME}
 
