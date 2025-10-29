@@ -24,22 +24,14 @@ func sanitize(msg string) string {
 	return sanitizedMsg.String()
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(conn, bcConn net.Conn) {
 	defer conn.Close()
-
-	bcListener, err := net.Listen("tcp", bcPort)
-	if err != nil {
-	}
-	defer bcListener.Close()
+	defer bcConn.Close()
 
 	for {
-		bcConn, err := bcListener.Accept()
-
+		// when receiving message from client, run through sanitizer before passing to upstream
+		// when receiving message from upstream, run throuhg sanitizer before passing to client
 	}
-
-	// establish connection to real budget chat
-	// when receiving message from client, run through sanitizer before passing to upstream
-	// when receiving message from upstream, run throuhg sanitizer before passing to client
 }
 
 func main() {
@@ -49,12 +41,23 @@ func main() {
 	}
 	defer listener.Close()
 
+	bcListener, err := net.Listen("tcp", bcPort)
+	if err != nil {
+		log.Fatalf("failed to listen on %s: %v", port, err)
+	}
+	defer bcListener.Close()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Fatalf("failed to accept connection: %v", err)
+			log.Fatalf("failed to accept connection to proxy server: %v", err)
 		}
 
-		go handleConnection(conn)
+		bcConn, err := bcListener.Accept()
+		if err != nil {
+			log.Fatalf("failed to accept connection to upstream: %v", err)
+		}
+
+		go handleConnection(conn, bcConn)
 	}
 }
