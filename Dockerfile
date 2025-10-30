@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY . .
 
-ARG CHALLENGE_NAME=unusual-db-program
+ARG CHALLENGE_NAME=mob-in-the-middle
 
 RUN go build -o /app/main ./cmd/${CHALLENGE_NAME}
 
