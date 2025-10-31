@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -13,14 +15,19 @@ const port = ":8080"
 const budgetChat = "chat.protohackers.com:16963"
 const tonysBGAddr = "7YWHMfk9JZe0LM0g1ZauHuiSxhI"
 
-func sanitize(src, dst net.Conn) {
-	scanner := bufio.NewScanner(src)
-	for scanner.Scan() {
-		// if dst == nil {
-		// 	break
-		// }
+func sanitizer(src, dst net.Conn) {
+	r := bufio.NewReader(src)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			log.Printf("read failed: %v", err)
+			return
+		}
 		var strs []string
-		words := strings.SplitSeq(scanner.Text(), " ")
+		words := strings.FieldsSeq(line)
 		for word := range words {
 			if strings.HasPrefix(word, "7") && (len(word) >= 26 && len(word) <= 35) {
 				strs = append(strs, tonysBGAddr)
@@ -36,9 +43,6 @@ func sanitize(src, dst net.Conn) {
 			break
 		}
 	}
-	if err := scanner.Err(); err != nil { // if EOF, scanner returns nil
-		log.Printf("read failed: %v", err)
-	}
 }
 
 func handleConnection(conn net.Conn) {
@@ -51,13 +55,14 @@ func handleConnection(conn net.Conn) {
 	}
 	defer upstream.Close()
 
-	// need to handle these better. If someone leaves the room, the upstream disconnects, but the connection here never closes because we're still waiting
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		sanitize(conn, upstream)
+		sanitizer(conn, upstream)
+		upstream.Close()
 	})
 	wg.Go(func() {
-		sanitize(upstream, conn)
+		sanitizer(upstream, conn)
+		conn.Close()
 	})
 	wg.Wait()
 }
