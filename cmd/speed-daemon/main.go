@@ -123,23 +123,40 @@ func handleCamera(c *Camera, cameraEvents chan message) {
 
 	r := bufio.NewReader(c.conn)
 	for {
-		b, err := r.ReadByte()
+		msgType, err := r.ReadByte()
 		if err != nil {
 			log.Printf("connection to camera was lost: %v", err)
 			return
 		}
 
-		if b == 0x20 {
+		switch msgType {
+		case 0x20:
 			var p Plate
-			// read first byte to get len of str
-			// read len of str into str
-			// read remaining uint32 (unix timestamp) into timestamp
-			// send to update channel a message
-			cameraEvents <- &p
-			continue
-		}
+			strLen, err := r.ReadByte()
+			if err != nil {
+				log.Printf("0x20: failed to read str len: %v", err)
+				return
+			}
+			p.plate.len = strLen
 
-		if b == 0x40 {
+			body := make([]byte, p.plate.len)
+			_, err = io.ReadFull(c.conn, body)
+			if err != nil {
+				log.Printf("0x20: failed to read str: %v", err)
+				return
+			}
+			copy(p.plate.body, body)
+
+			timestamp := make([]byte, 4)
+			_, err = io.ReadFull(c.conn, timestamp)
+			if err != nil {
+				log.Printf("0x20: failed to read timestamp: %v", err)
+				return
+			}
+			p.timestamp = binary.BigEndian.Uint32(timestamp)
+
+			cameraEvents <- &p
+		case 0x40:
 			cameraEvents <- &WantHeartbeat{}
 			continue
 		}
