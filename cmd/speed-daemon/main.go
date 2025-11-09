@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/gob"
 	"fmt"
 	"io"
 	"log"
@@ -87,6 +88,13 @@ type ClientDisconnect struct {
 
 func (c *ClientDisconnect) isMessage()
 
+type ClientError struct {
+	conn net.Conn
+	msg  string
+}
+
+func (c *ClientError) isMessage()
+
 type Camera struct {
 	conn     net.Conn
 	data     IAmCamera
@@ -158,10 +166,10 @@ func handleCamera(c *Camera, cameraEvents chan message) {
 			cameraEvents <- &p
 		case 0x40:
 			cameraEvents <- &WantHeartbeat{}
-			continue
+		default:
+			cameraEvents <- &ClientError{c.conn, fmt.Sprintf("invalid camera msg type, got 0x%x", msgType)}
+			return
 		}
-
-		// b is not a valid message type, handle error
 	}
 }
 
@@ -175,11 +183,20 @@ func cameraManager(newCamera <-chan *Camera, cameraEvents <-chan message) {
 		case event := <-cameraEvents:
 			switch e := event.(type) {
 			case *Plate:
-			// register plate and check to see if we have a potential ticket
 			case *WantHeartbeat:
-			// send heartbeat
 			case *ClientDisconnect:
 				delete(cameras, e.conn)
+			case *ClientError:
+				errMsg := Error{
+					msg: str{
+						len:  byte(len(e.msg)),
+						body: []byte(e.msg),
+					},
+				}
+				err := gob.NewEncoder(e.conn).Encode(errMsg)
+				if err != nil {
+					log.Printf("failed to send error message to camera client %v: %v", e.conn, err)
+				}
 			}
 		}
 	}
