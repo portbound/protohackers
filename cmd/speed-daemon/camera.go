@@ -5,16 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"reflect"
+	"time"
 )
 
 var cameras map[net.Conn]*IAmCamera
-var roads map[uint16][]*Plate
 
 func newCameraFromConn(conn net.Conn, cameraEvents chan<- *event) error {
 	var m IAmCamera
-	err := m.decode(conn)
-	if err != nil {
+	if err := m.decode(conn); err != nil {
 		return err
 	}
 
@@ -38,36 +36,28 @@ func handleCamera(conn net.Conn, cameraEvents chan<- *event) {
 		switch typ {
 		case uint8(MsgPlate):
 			var p Plate
-			err := p.decode(conn)
-			if err != nil {
+			if err := p.decode(conn); err != nil {
 				log.Printf("0x%x: failed to decode: %v", typ, err)
 				return
 			}
 			cameraEvents <- &event{conn: conn, msg: &p}
 		case uint8(MsgWantHeartBeat):
 			var w WantHeartbeat
-			err := w.decode(conn)
-			if err != nil {
+			if err := w.decode(conn); err != nil {
 				log.Printf("0x%x: failed to decode: %v", typ, err)
 				return
 			}
 			cameraEvents <- &event{conn: conn, msg: &w}
 		default:
-			var e Error
-			e.msg.body = fmt.Appendf(e.msg.body, "0x%x: invalid message type for client type camera", typ)
-			log.Print(string(e.msg.body))
-			err := e.encode(conn)
-			if err != nil {
-				log.Printf("failed to encode msg '%s' to client %v: %v", e.msg.body, conn, err)
-			}
+			sendError(conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send the server a message with message type: 0x%x", conn, typ))
 			return
 		}
 	}
 }
 
-func cameraManager(cameraEvents <-chan *event) {
-	cameras = make(map[net.Conn]*IAmCamera)
-	roads = make(map[uint16][]*Plate)
+func cameraManager(cameraEvents chan *event) {
+	roads := make(map[uint16][]*Plate)
+	heartbeats := make(map[net.Conn]uint32)
 
 	// not sure if we need to close this channel anywhere? since it's technically supposed to run until the end of the program, it might be fine, but keep in mind this blocks forever
 	for e := range cameraEvents {
@@ -78,23 +68,46 @@ func cameraManager(cameraEvents <-chan *event) {
 			camera, ok := cameras[e.conn]
 			if !ok {
 				log.Printf("camera for client %v does not exist", e.conn)
-				return
+				continue
 			}
-			plates := append(roads[camera.road], t)
 
-			go handleTicketCheck(plates)
+			road, ok := roads[camera.road]
+			if !ok {
+				roads[camera.road] = append(roads[camera.road], t)
+				continue
+			}
+
+			performTicketCheck(road, t)
 		case *WantHeartbeat:
-			// need to keep track of these requests? a client can only request a heartbeat once. any further requests should trigger an Error
+			if _, ok := heartbeats[e.conn]; ok {
+				sendError(e.conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send multiple WantHeartbeat messages on a single connection", e.conn))
+				cameraEvents <- &event{e.conn, &ClientDisconnect{}}
+				continue
+			}
+
+			heartbeats[e.conn] = t.interval
+			go handleHeartbeat(e.conn, t.interval)
 		case *ClientDisconnect:
 			delete(cameras, e.conn)
 		}
 	}
 }
 
-func handleTicketCheck(plates []*Plate) {
-	for _, p := range plates {
-		if reflect.DeepEqual(p.plate, t.plate) {
+func handleHeartbeat(conn net.Conn, interval uint32) {
+	for {
+		time.Sleep(time.Duration(interval/10) * time.Second)
+		var h Heartbeat
+		if err := h.encode(conn); err != nil {
+			log.Printf("failed to send heartbeat to client %v: %e", conn, err)
+			return
 		}
 	}
+}
 
+func performTicketCheck([]*Plate, *Plate) {
+	// if we have a current plate check for say 'mile 9' we're only interested in matching plates for 'mile 8' (I think?)
+	// there's probably an algorithm we can use to streamline this, but i'd imagine the o(n) solution is probably fine for this challenge
+	// We need to touch every plate to see if it's road number is our plate - 1 and then see if the plate actually matches
+	// We do need to touch every plate though because the instructions say that clients may not send their plates on time, so the plates arent' actually sorted or anything
+	// So yeah, I guess simple sort is probably pretty straightforward here
 }
