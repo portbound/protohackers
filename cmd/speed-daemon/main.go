@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"net"
 )
@@ -11,6 +12,17 @@ const port = ":8080"
 type event struct {
 	conn net.Conn
 	msg  message
+}
+
+func sendError(conn net.Conn, msg string) {
+	var e Error
+	e.msg.body = fmt.Appendf(e.msg.body, msg)
+	err := e.encode(conn)
+	if err != nil {
+		log.Printf("failed to send Error to client %v: %v", conn, err)
+	} else {
+		log.Print(msg)
+	}
 }
 
 func main() {
