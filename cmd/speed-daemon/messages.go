@@ -95,17 +95,21 @@ type Ticket struct {
 	speed      uint16 // 100x mph
 }
 
-func (t *Ticket) encode(conn net.Conn) error { return nil }
+func (t *Ticket) encode(conn net.Conn) error {
+	if err := binary.Write(conn, binary.BigEndian, t); err != nil {
+		return err
+	}
+	return nil
+}
 func (t *Ticket) decode(conn net.Conn) error { return nil }
 
 type WantHeartbeat struct {
 	interval uint32
 }
 
-func (wh *WantHeartbeat) encode(conn net.Conn) error { return nil }
-func (wh *WantHeartbeat) decode(conn net.Conn) error {
-	err := binary.Read(conn, binary.BigEndian, wh)
-	if err != nil {
+func (w *WantHeartbeat) encode(conn net.Conn) error { return nil }
+func (w *WantHeartbeat) decode(conn net.Conn) error {
+	if err := binary.Read(conn, binary.BigEndian, w); err != nil {
 		return err
 	}
 
@@ -114,7 +118,12 @@ func (wh *WantHeartbeat) decode(conn net.Conn) error {
 
 type Heartbeat struct{}
 
-func (h *Heartbeat) encode(conn net.Conn) error { return nil }
+func (h *Heartbeat) encode(conn net.Conn) error {
+	if err := binary.Write(conn, binary.BigEndian, h); err != nil {
+		return err
+	}
+	return nil
+}
 func (h *Heartbeat) decode(conn net.Conn) error { return nil }
 
 type IAmCamera struct {
@@ -125,11 +134,9 @@ type IAmCamera struct {
 
 func (c *IAmCamera) encode(conn net.Conn) error { return nil }
 func (c *IAmCamera) decode(conn net.Conn) error {
-	err := binary.Read(conn, binary.BigEndian, c)
-	if err != nil {
+	if err := binary.Read(conn, binary.BigEndian, c); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -139,7 +146,12 @@ type IAmDispatcher struct {
 }
 
 func (d *IAmDispatcher) encode(conn net.Conn) error { return nil }
-func (d *IAmDispatcher) decode(conn net.Conn) error { return nil }
+func (d *IAmDispatcher) decode(conn net.Conn) error {
+	if err := binary.Read(conn, binary.BigEndian, d); err != nil {
+		return err
+	}
+	return nil
+}
 
 type ClientDisconnect struct{}
 
