@@ -5,15 +5,20 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sort"
+	"slices"
 	"time"
 )
 
 var cameras map[net.Conn]*IAmCamera
 
-type cust struct {
-	*IAmCamera
-	*Plate
+type road struct {
+	speedLimit   uint16
+	allSightings map[string][]*sighting
+}
+
+type sighting struct {
+	mile      uint16
+	timestamp uint32
 }
 
 func newCameraFromConn(conn net.Conn, cameraEvents chan<- *event) error {
@@ -63,14 +68,21 @@ func handleCamera(conn net.Conn, cameraEvents chan<- *event) {
 
 func cameraManager(cameraEvents chan *event) {
 
-	roads := make(map[uint16][]*cust)
-	heartbeats := make(map[net.Conn]uint32)
+	var heartbeats = make(map[net.Conn]uint32)
+	var allTickets = make(map[string]map[uint32]struct{}) // map[plate]map[day]struct{}
+	var roads = make(map[uint16]*road)
 
 	// not sure if we need to close this channel anywhere? since it's technically supposed to run until the end of the program, it might be fine, but keep in mind this blocks forever
 	for e := range cameraEvents {
 		switch msg := e.msg.(type) {
 		case *IAmCamera:
 			cameras[e.conn] = msg
+			if _, ok := roads[msg.road]; !ok {
+				roads[msg.road] = &road{
+					speedLimit:   msg.limit,
+					allSightings: make(map[string][]*sighting),
+				}
+			}
 		case *Plate:
 			camera, ok := cameras[e.conn]
 			if !ok {
@@ -78,26 +90,56 @@ func cameraManager(cameraEvents chan *event) {
 				continue
 			}
 
-			// not sure if we need this check, it makes sense, we don't need to perform a ticket check if this is the first instance of a plate on that particular road, but I don't know if it really matters, and this is hard to understand at a glance. It's probably better to just "check" since it should be super fast with a single plate anyway
-
-			// road, ok := roads[camera.road]
-			// if !ok {
-			// 	// roads[camera.road] = append(roads[camera.road], msg)
-			// 	roads[camera.road] = append(roads[camera.road], &cust{
-			// 		IAmCamera: camera,
-			// 		Plate:     msg,
-			// 	})
-			// 	continue
-			// }
-
-			c := cust{
-				IAmCamera: camera,
-				Plate:     msg,
+			road, ok := roads[camera.road]
+			if !ok {
+				log.Printf("road for camera %v does not exist", e.conn)
+				continue
 			}
 
-			roads[camera.road] = append(roads[camera.road], &c)
+			// create sighting and add to plate's slice
+			s := sighting{
+				mile:      camera.mile,
+				timestamp: msg.timestamp,
+			}
+			sightings := road.allSightings[string(msg.plate.body)]
+			sightings = append(sightings, &s)
 
-			performTicketCheck(roads[camera.road], &c)
+			// // check if we have tickets for the current plate
+			// tickets, ok := allTickets[string(msg.plate.body)]
+			// if ok {
+			// 	// if we do, check if any of them are for the current day
+			// 	if _, ok = tickets[s.timestamp/86400]; ok {
+			// 		// if one exists, move on
+			// 		continue
+			// 	}
+			// }
+
+			slices.SortFunc(sightings, func(a, b *sighting) int {
+				if a.timestamp < b.timestamp {
+					return -1
+				}
+				if a.timestamp > b.timestamp {
+					return 1
+				}
+				return 0
+			})
+
+			idx := slices.Index(sightings, &s)
+			left := idx - 1
+			right := idx + 1
+
+			// after sorting, when we check the left, if we have a ticket we don't need to check the right. All potential combinations touching &s are now "marked" as having a ticket
+			// we only need to check right when leftTicket comes back as nil, meaning we didn't find one on the left
+			leftTicket := performTicketCheck(&s, sightings[left], camera.limit)
+			if leftTicket != nil {
+				// dispatch ticket
+				continue
+			}
+
+			rightTicket := performTicketCheck(&s, sightings[right], camera.limit)
+			if rightTicket != nil {
+			}
+
 		case *WantHeartbeat:
 			if _, ok := heartbeats[e.conn]; ok {
 				sendError(e.conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send multiple WantHeartbeat messages on a single connection", e.conn))
@@ -113,6 +155,31 @@ func cameraManager(cameraEvents chan *event) {
 	}
 }
 
+func performTicketCheck(curr, neighbor *sighting, limit uint16) *Ticket {
+	i := curr
+	j := neighbor
+
+	if curr.mile < neighbor.mile {
+		i = neighbor
+		j = curr
+	}
+
+	distance := i.mile - j.mile
+	time := i.timestamp - j.timestamp
+	speed := (float64(distance) / float64(time)) * 3600.0
+
+	var ticket Ticket
+	if speed > float64(limit) {
+		// if i.timestamp/86400 != j.timestamp/86400 then we're dealing with potentially two tickets
+		// check if i.timestamp/86400 has an existing ticket in tickets slice if it doesn't, create the ticket
+		// check if j.timestamp/86400 has an existing ticket in tickets slice if it doesn't, create the ticket
+
+		// I worry that waiting to check here is adding unneccessary compute to the program. By this point, we've already sorted the slice and checked for speeding
+	}
+
+	return &ticket
+}
+
 func handleHeartbeat(conn net.Conn, interval uint32) {
 	var h Heartbeat
 	for {
@@ -122,29 +189,4 @@ func handleHeartbeat(conn net.Conn, interval uint32) {
 			return
 		}
 	}
-}
-
-func performTicketCheck(road []*cust, c *cust) {
-	sort.Slice(road, func(i int, j int) bool {
-		return road[i].mile < road[j].mile
-	})
-
-	// Must be sorted!!!
-
-	// cameras may glitch and fail to take the picture at a given mile mark
-	// plate pics may come out of order
-	// can't send tickets twice
-
-	// with these constraints the solution seems to be as follows:
-	// By sorting the set, we can basically just find the index of the passed in cust and then search left until we find the first occurence of that plate at a lower mile mark, and then search right until we find the first occurence at a higher mile mark.
-	// Only write tickets that contain the passed in cust. Since this is new, there will never be a dupe.
-	// the only place this falls apart I think is if we receive images for a car speeding at mile 4 and then 6. We write a ticket and move on. Then later on a picture for mile 5 comes in and we do our check which should now technically return 2 more tickets.
-	// So in total, the car gets tickets for 4>5, 5>6, and also 4>6
-	// this does not seem right
-
-	// var speed int
-	// for i := len(road) - 1; i >= 0; i-- {
-	// 	if bytes.Equal(road[i].plate.body, plate.plate.body) {
-	// }
-	// }
 }
