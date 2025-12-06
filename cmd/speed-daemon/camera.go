@@ -13,13 +13,14 @@ var cameras map[net.Conn]*IAmCamera
 var tickets map[string]map[uint32]struct{} // map[plate]map[day]struct{}
 
 type road struct {
-	speedLimit   uint16
-	allSightings map[string][]*sighting
+	plates map[string][]*sighting // map[plate]sightings
 }
 
 type sighting struct {
 	road      uint16
 	mile      uint16
+	limit     uint16
+	plate     str
 	timestamp uint32
 }
 
@@ -73,15 +74,13 @@ func cameraManager(cameraEvents chan *event) {
 	var heartbeats = make(map[net.Conn]uint32)
 	var roads = make(map[uint16]*road)
 
-	// not sure if we need to close this channel anywhere? since it's technically supposed to run until the end of the program, it might be fine, but keep in mind this blocks forever
 	for e := range cameraEvents {
 		switch msg := e.msg.(type) {
 		case *IAmCamera:
 			cameras[e.conn] = msg
 			if _, ok := roads[msg.road]; !ok {
 				roads[msg.road] = &road{
-					speedLimit:   msg.limit,
-					allSightings: make(map[string][]*sighting),
+					plates: make(map[string][]*sighting),
 				}
 			}
 		case *Plate:
@@ -97,16 +96,18 @@ func cameraManager(cameraEvents chan *event) {
 				continue
 			}
 
-			// create sighting and add to plate's slice
 			s := sighting{
 				road:      camera.road,
 				mile:      camera.mile,
+				limit:     camera.limit,
+				plate:     msg.plate,
 				timestamp: msg.timestamp,
 			}
-			sightings := road.allSightings[string(msg.plate.body)]
+
+			// don't need to check if it exists since a nil slice can be appended to (in the event that the plate doesn't exist yet)
+			sightings := road.plates[string(s.plate.body)]
 			sightings = append(sightings, &s)
 
-			// sort the slice
 			slices.SortFunc(sightings, func(a, b *sighting) int {
 				if a.timestamp < b.timestamp {
 					return -1
@@ -118,18 +119,25 @@ func cameraManager(cameraEvents chan *event) {
 			})
 			idx := slices.Index(sightings, &s)
 
-			// check to see if we have a ticket for the day
-			ts := tickets[string(msg.plate.body)]
-			if _, ok := ts[s.timestamp/86400]; ok { // TODO need to check this logic
-				continue // we have a ticket for this day already and should continue
-			}
+			// perform ticket check should take in the sightings slice as well as the index and simply check left and right to see if we have tickets and return them. It should return a left ticket and a right ticket that we can check for nil.
+			lTicket, rTicket := ticketCheck(idx, sightings)
 
-			t := performTicketCheck(idx, sightings, camera.limit)
-			if t != nil {
-				t.plate = msg.plate
-				t.road = camera.road
-				// dispatch ticket
-			}
+			// now we should check to see if the date on either ticket conflicts with a day in the existing tickets slice
+			// if not, we can call dispatchTicket()
+			// if it does, simply continue
+
+			// // check to see if we have a ticket for the day
+			// ts := tickets[string(msg.plate.body)]
+			// if _, ok := ts[s.timestamp/86400]; ok { // TODO need to check this logic
+			// 	continue // we have a ticket for this day already and should continue
+			// }
+			//
+			// t := performTicketCheck(idx, sightings, camera.limit)
+			// if t != nil {
+			// 	t.plate = msg.plate
+			// 	t.road = camera.road
+			// 	// dispatch ticket
+			// }
 		case *WantHeartbeat:
 			if _, ok := heartbeats[e.conn]; ok {
 				sendError(e.conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send multiple WantHeartbeat messages on a single connection", e.conn))
@@ -145,45 +153,49 @@ func cameraManager(cameraEvents chan *event) {
 	}
 }
 
-func performTicketCheck(idx int, sightings []*sighting, limit uint16) *Ticket {
-	curr := sightings[idx]
-
-	if idx > 0 {
-		left := sightings[idx-1]
-		distance := curr.mile - left.mile
-		time := curr.timestamp - left.timestamp
-		speed := (float64(distance) / float64(time)) * 3600.0
-
-		if speed > float64(limit) {
-			return &Ticket{
-				mile1:      left.mile,
-				timestamp1: left.timestamp,
-				mile2:      curr.mile,
-				timestamp2: curr.timestamp,
-				speed:      uint16(speed),
-			}
-		}
-	}
-
-	if idx < len(sightings) {
-		right := sightings[idx+1]
-		distance := curr.mile - right.mile
-		time := curr.timestamp - right.timestamp
-		speed := (float64(distance) / float64(time)) * 3600.0
-
-		if speed > float64(limit) {
-			return &Ticket{
-				mile1:      right.mile,
-				timestamp1: right.timestamp,
-				mile2:      curr.mile,
-				timestamp2: curr.timestamp,
-				speed:      uint16(speed),
-			}
-		}
-	}
-
-	return nil
+func ticketCheck(idx int, sightings []*sighting) (lTicket, rTicket *Ticket) {
+	return nil, nil
 }
+
+// func performTicketCheck(idx int, sightings []*sighting, limit uint16) *Ticket {
+// 	curr := sightings[idx]
+//
+// 	if idx > 0 {
+// 		left := sightings[idx-1]
+// 		distance := curr.mile - left.mile
+// 		time := curr.timestamp - left.timestamp
+// 		speed := (float64(distance) / float64(time)) * 3600.0
+//
+// 		if speed > float64(limit) {
+// 			return &Ticket{
+// 				mile1:      left.mile,
+// 				timestamp1: left.timestamp,
+// 				mile2:      curr.mile,
+// 				timestamp2: curr.timestamp,
+// 				speed:      uint16(speed) * 100,
+// 			}
+// 		}
+// 	}
+//
+// 	if idx < len(sightings) {
+// 		right := sightings[idx+1]
+// 		distance := curr.mile - right.mile
+// 		time := curr.timestamp - right.timestamp
+// 		speed := (float64(distance) / float64(time)) * 3600.0
+//
+// 		if speed > float64(limit) {
+// 			return &Ticket{
+// 				mile1:      right.mile,
+// 				timestamp1: right.timestamp,
+// 				mile2:      curr.mile,
+// 				timestamp2: curr.timestamp,
+// 				speed:      uint16(speed) * 100,
+// 			}
+// 		}
+// 	}
+//
+// 	return nil
+// }
 
 func handleHeartbeat(conn net.Conn, interval uint32) {
 	var h Heartbeat
