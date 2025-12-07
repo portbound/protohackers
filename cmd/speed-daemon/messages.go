@@ -104,7 +104,7 @@ func (t *Ticket) encode(conn net.Conn) error {
 func (t *Ticket) decode(conn net.Conn) error { return nil }
 
 type WantHeartbeat struct {
-	interval uint32
+	Interval uint32
 }
 
 func (w *WantHeartbeat) encode(conn net.Conn) error { return nil }
