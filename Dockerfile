@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY . .
 
-ARG CHALLENGE_NAME=mob-in-the-middle
+ARG CHALLENGE_NAME=speed-daemon
 
 RUN go build -o /app/main ./cmd/${CHALLENGE_NAME}
 

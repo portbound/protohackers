@@ -1,6 +1,6 @@
 services:
   smoke-test:
-    image: portbound/protohackers:mob-in-the-middle
+    image: portbound/protohackers:speed-daemon
 
     ports:
       - "5001:8080"
