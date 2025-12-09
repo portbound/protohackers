@@ -119,7 +119,7 @@ func (w *WantHeartbeat) decode(conn net.Conn) error {
 type Heartbeat struct{}
 
 func (h *Heartbeat) encode(conn net.Conn) error {
-	if err := binary.Write(conn, binary.BigEndian, h); err != nil {
+	if err := binary.Write(conn, binary.BigEndian, byte(MsgHeartBeat)); err != nil {
 		return err
 	}
 	return nil

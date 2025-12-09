@@ -11,7 +11,7 @@ import (
 var cameras map[net.Conn]*IAmCamera
 var tickets map[string]map[uint32]struct{} // map[plate]map[day]struct{}
 
-type road struct {
+type Road struct {
 	cars map[string][]*sighting // map[plate]sightings
 }
 
@@ -43,7 +43,11 @@ func newCameraFromConn(conn net.Conn, events chan<- *event) error {
 
 func handleCamera(conn net.Conn, cameraEvents chan<- *event) {
 	defer func() {
-		cameraEvents <- &event{conn, &ClientDisconnect{}}
+		cameraEvents <- &event{
+			conn:   conn,
+			msg:    nil,
+			signal: make(chan struct{}),
+		}
 	}()
 
 	var typ uint8
@@ -70,20 +74,20 @@ func handleCamera(conn net.Conn, cameraEvents chan<- *event) {
 			}
 			cameraEvents <- &event{conn: conn, msg: &w}
 		default:
-			sendError(conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send the server a message with message type: 0x%x", conn, typ))
+			sendErrorAndDisconnect(conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send the server a message with message type: 0x%x", conn, typ))
 			return
 		}
 	}
 }
 
 func cameraManager(cameraEvents, dispatcherEvents chan *event) {
-	var roads = make(map[uint16]*road)
+	var roads = make(map[uint16]*Road)
 	for e := range cameraEvents {
 		switch msg := e.msg.(type) {
 		case *IAmCamera:
 			cameras[e.conn] = msg
 			if _, ok := roads[msg.road]; !ok {
-				roads[msg.road] = &road{
+				roads[msg.road] = &Road{
 					cars: make(map[string][]*sighting),
 				}
 			}
@@ -121,17 +125,17 @@ func cameraManager(cameraEvents, dispatcherEvents chan *event) {
 				}
 				return 0
 			})
-			idx := slices.Index(sightings, &s)
+			// idx := slices.Index(sightings, &s)
 
 			tix := tickets[string(s.plate.body)]
 			if _, ok := tix[s.timestamp/86400]; ok { // TODO need to check this logic
 				continue // we have a ticket for this day already and should continue
 			}
 
-			t := ticketCheck(idx, sightings)
-			tix[t.timestamp1/86400] = struct{}{}
-			tix[t.timestamp2/86400] = struct{}{}
-			dispatcherEvents <- &event{e.conn, t}
+			// t := ticketCheck(idx, sightings)
+			// tix[t.timestamp1/86400] = struct{}{}
+			// tix[t.timestamp2/86400] = struct{}{}
+			// dispatcherEvents <- &event{e.conn, t}
 
 		case *ClientDisconnect:
 			delete(cameras, e.conn)

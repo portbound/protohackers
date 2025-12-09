@@ -22,7 +22,11 @@ func newDispatcherFromConn(conn net.Conn, dispatcherEvents chan<- *event) error 
 
 func handleDispatcher(conn net.Conn, dispatcherEvents chan<- *event) {
 	defer func() {
-		dispatcherEvents <- &event{conn, &ClientDisconnect{}}
+		dispatcherEvents <- &event{
+			conn:   conn,
+			msg:    nil,
+			signal: make(chan struct{}),
+		}
 	}()
 
 	var typ uint8
@@ -43,7 +47,7 @@ func handleDispatcher(conn net.Conn, dispatcherEvents chan<- *event) {
 			}
 			dispatcherEvents <- &event{conn: conn, msg: &t}
 		default:
-			sendError(conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send the server a message with message type: 0x%x", conn, typ))
+			sendErrorAndDisconnect(conn, fmt.Sprintf("Client: %v\nError: it is an error for a client to send the server a message with message type: 0x%x", conn, typ))
 			return
 		}
 	}
