@@ -28,19 +28,19 @@ type message interface {
 }
 
 type str struct {
-	len  uint8
-	body []byte
+	Len  uint8
+	Body []byte
 }
 
 func (s *str) encode(conn net.Conn) error { return nil }
 func (s *str) decode(conn net.Conn) error {
-	err := binary.Read(conn, binary.BigEndian, &s.len)
+	err := binary.Read(conn, binary.BigEndian, &s.Len)
 	if err != nil {
 		return fmt.Errorf("read str len err: %w", err)
 	}
 
-	s.body = make([]byte, s.len)
-	_, err = io.ReadFull(conn, s.body)
+	s.Body = make([]byte, s.Len)
+	_, err = io.ReadFull(conn, s.Body)
 	if err != nil {
 		return fmt.Errorf("read str body err: %w", err)
 	}
@@ -49,11 +49,11 @@ func (s *str) decode(conn net.Conn) error {
 }
 
 type Error struct {
-	msg str
+	Msg str
 }
 
 func (e *Error) encode(conn net.Conn) error {
-	err := e.msg.encode(conn)
+	err := e.Msg.encode(conn)
 	if err != nil {
 		return fmt.Errorf("failed to encode str: %w", err)
 	}
@@ -66,18 +66,18 @@ func (e *Error) encode(conn net.Conn) error {
 func (e *Error) decode(conn net.Conn) error { return nil }
 
 type Plate struct {
-	plate     str
-	timestamp uint32
+	Plate     str
+	Timestamp uint32
 }
 
 func (p *Plate) encode(conn net.Conn) error { return nil }
 func (p *Plate) decode(conn net.Conn) error {
-	err := p.plate.decode(conn)
+	err := p.Plate.decode(conn)
 	if err != nil {
 		return fmt.Errorf("failed to decode str: %w", err)
 	}
 
-	err = binary.Read(conn, binary.BigEndian, &p.timestamp)
+	err = binary.Read(conn, binary.BigEndian, &p.Timestamp)
 	if err != nil {
 		return fmt.Errorf("failed to read timestamp: %w", err)
 	}
@@ -86,13 +86,13 @@ func (p *Plate) decode(conn net.Conn) error {
 }
 
 type Ticket struct {
-	plate      str
-	road       uint16
-	mile1      uint16
-	timestamp1 uint32
-	mile2      uint16
-	timestamp2 uint32
-	speed      uint16 // 100x mph
+	Plate      str
+	Road       uint16
+	Mile1      uint16
+	Timestamp1 uint32
+	Mile2      uint16
+	Timestamp2 uint32
+	Speed      uint16 // 100x mph
 }
 
 func (t *Ticket) encode(conn net.Conn) error {
@@ -127,9 +127,9 @@ func (h *Heartbeat) encode(conn net.Conn) error {
 func (h *Heartbeat) decode(conn net.Conn) error { return nil }
 
 type IAmCamera struct {
-	road  uint16
-	mile  uint16
-	limit uint16
+	Road  uint16
+	Mile  uint16
+	Limit uint16
 }
 
 func (c *IAmCamera) encode(conn net.Conn) error { return nil }
@@ -141,8 +141,8 @@ func (c *IAmCamera) decode(conn net.Conn) error {
 }
 
 type IAmDispatcher struct {
-	numroads uint8
-	roads    []uint16
+	Numroads uint8
+	Roads    []uint16
 }
 
 func (d *IAmDispatcher) encode(conn net.Conn) error { return nil }

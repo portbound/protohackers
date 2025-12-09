@@ -11,16 +11,27 @@ import (
 
 const port = ":8080"
 
-type event struct {
-	conn   net.Conn
-	msg    message
-	signal chan struct{}
+type Road struct {
+	Cars map[string][]*Sighting // map[plate]sightings
+}
+
+type Sighting struct {
+	Road      uint16
+	Mile      uint16
+	Limit     uint16
+	Plate     str
+	timestamp uint32
+}
+type Event struct {
+	Conn   net.Conn
+	Msg    message
+	Signal chan struct{}
 }
 
 func sendErrorAndDisconnect(conn net.Conn, msg string) {
 	defer conn.Close()
 	var e Error
-	e.msg.body = fmt.Append(e.msg.body, msg)
+	e.Msg.Body = fmt.Append(e.Msg.Body, msg)
 	err := e.encode(conn)
 	if err != nil {
 		log.Printf("failed to send Error to client %v: %v", conn, err)
@@ -47,32 +58,35 @@ func handleHeartbeat(conn net.Conn, msg *WantHeartbeat, signal chan struct{}) {
 	signal <- struct{}{}
 }
 
-func serverManager(events chan *event) {
+func serverManager(events chan *Event) {
+	cameras := make(map[net.Conn]*IAmCamera)
+	dispatchers := make(map[net.Conn]*IAmDispatcher)
+	var tickets map[string]map[uint32]struct{} // map[plate]map[day]struct{}
 	var heartbeats = make(map[net.Conn]*WantHeartbeat)
 	var roads = make(map[uint16]*Road)
 
 	for e := range events {
-		switch msg := e.msg.(type) {
+		switch msg := e.Msg.(type) {
 		case *Plate:
-			if camera, ok := cameras[e.conn]; ok {
-				road, ok := roads[camera.road]
+			if camera, ok := cameras[e.Conn]; ok {
+				road, ok := roads[camera.Road]
 				if !ok {
-					log.Printf("road for camera %v does not exist", e.conn)
+					log.Printf("road for camera %v does not exist", e.Conn)
 					continue
 				}
 
-				s := sighting{
-					road:      camera.road,
-					mile:      camera.mile,
-					limit:     camera.limit,
-					plate:     msg.plate,
-					timestamp: msg.timestamp,
+				s := Sighting{
+					Road:      camera.Road,
+					Mile:      camera.Mile,
+					Limit:     camera.Limit,
+					Plate:     msg.Plate,
+					timestamp: msg.Timestamp,
 				}
 
-				sightings := road.cars[string(s.plate.body)]
+				sightings := road.Cars[string(s.Plate.Body)]
 				sightings = append(sightings, &s)
 
-				slices.SortFunc(sightings, func(a, b *sighting) int {
+				slices.SortFunc(sightings, func(a, b *Sighting) int {
 					if a.timestamp < b.timestamp {
 						return -1
 					}
@@ -83,7 +97,7 @@ func serverManager(events chan *event) {
 				})
 				idx := slices.Index(sightings, &s)
 
-				tix := tickets[string(s.plate.body)]
+				tix := tickets[string(s.Plate.Body)]
 				if _, ok := tix[s.timestamp/86400]; ok { // TODO need to check this logic
 					continue // we have a ticket for this day already and should continue
 				}
@@ -92,78 +106,78 @@ func serverManager(events chan *event) {
 
 				if idx > 0 {
 					left := sightings[idx-1]
-					distance := curr.mile - left.mile
+					distance := curr.Mile - left.Mile
 					time := curr.timestamp - left.timestamp
 					speed := (float64(distance) / float64(time)) * 3600.0
 
-					if speed > float64(curr.limit) {
+					if speed > float64(curr.Limit) {
 						t := &Ticket{
-							mile1:      left.mile,
-							timestamp1: left.timestamp,
-							mile2:      curr.mile,
-							timestamp2: curr.timestamp,
-							speed:      uint16(speed) * 100,
+							Mile1:      left.Mile,
+							Timestamp1: left.timestamp,
+							Mile2:      curr.Mile,
+							Timestamp2: curr.timestamp,
+							Speed:      uint16(speed) * 100,
 						}
-						tix[t.timestamp1/86400] = struct{}{}
-						tix[t.timestamp2/86400] = struct{}{}
+						tix[t.Timestamp1/86400] = struct{}{}
+						tix[t.Timestamp2/86400] = struct{}{}
 						continue
 					}
 				}
 
 				if idx < len(sightings) {
 					right := sightings[idx+1]
-					distance := curr.mile - right.mile
+					distance := curr.Mile - right.Mile
 					time := curr.timestamp - right.timestamp
 					speed := (float64(distance) / float64(time)) * 3600.0
 
-					if speed > float64(curr.limit) {
+					if speed > float64(curr.Limit) {
 						t := &Ticket{
-							mile1:      right.mile,
-							timestamp1: right.timestamp,
-							mile2:      curr.mile,
-							timestamp2: curr.timestamp,
-							speed:      uint16(speed) * 100,
+							Mile1:      right.Mile,
+							Timestamp1: right.timestamp,
+							Mile2:      curr.Mile,
+							Timestamp2: curr.timestamp,
+							Speed:      uint16(speed) * 100,
 						}
-						tix[t.timestamp1/86400] = struct{}{}
-						tix[t.timestamp2/86400] = struct{}{}
+						tix[t.Timestamp1/86400] = struct{}{}
+						tix[t.Timestamp2/86400] = struct{}{}
 					}
 				}
 
 			} else {
-				sendErrorAndDisconnect(e.conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has not identified itself as a camera to send a Plate message.", e.conn))
+				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has not identified itself as a camera to send a Plate message.", e.Conn))
 			}
 		case *WantHeartbeat:
-			if _, ok := heartbeats[e.conn]; ok {
-				sendErrorAndDisconnect(e.conn, fmt.Sprintf("Client: %v\nError: It is an error for a client to send multiple WantHeartbeat messages on a single connection", e.conn))
+			if _, ok := heartbeats[e.Conn]; ok {
+				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client to send multiple WantHeartbeat messages on a single connection", e.Conn))
 			} else {
-				heartbeats[e.conn] = msg
-				go handleHeartbeat(e.conn, msg, e.signal)
+				heartbeats[e.Conn] = msg
+				go handleHeartbeat(e.Conn, msg, e.Signal)
 			}
 		case *IAmCamera:
-			if _, ok := cameras[e.conn]; ok {
-				sendErrorAndDisconnect(e.conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmCamera message.", e.conn))
-				delete(cameras, e.conn)
-			} else if _, ok := dispatchers[e.conn]; ok {
-				sendErrorAndDisconnect(e.conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmCamera message.", e.conn))
-				delete(dispatchers, e.conn)
+			if _, ok := cameras[e.Conn]; ok {
+				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmCamera message.", e.Conn))
+				delete(cameras, e.Conn)
+			} else if _, ok := dispatchers[e.Conn]; ok {
+				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmCamera message.", e.Conn))
+				delete(dispatchers, e.Conn)
 			} else {
-				cameras[e.conn] = msg
+				cameras[e.Conn] = msg
 			}
 		case *IAmDispatcher:
-			if _, ok := cameras[e.conn]; ok {
-				sendErrorAndDisconnect(e.conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmDispatcher message.", e.conn))
-				delete(cameras, e.conn)
-			} else if _, ok := dispatchers[e.conn]; ok {
-				sendErrorAndDisconnect(e.conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmDispatcher message.", e.conn))
-				delete(dispatchers, e.conn)
+			if _, ok := cameras[e.Conn]; ok {
+				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmDispatcher message.", e.Conn))
+				delete(cameras, e.Conn)
+			} else if _, ok := dispatchers[e.Conn]; ok {
+				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmDispatcher message.", e.Conn))
+				delete(dispatchers, e.Conn)
 			} else {
-				dispatchers[e.conn] = msg
+				dispatchers[e.Conn] = msg
 			}
 		}
 	}
 }
 
-func handleConnection(conn net.Conn, events chan *event) {
+func handleConnection(conn net.Conn, events chan *Event) {
 	defer conn.Close()
 
 	var b uint8
@@ -181,13 +195,13 @@ func handleConnection(conn net.Conn, events chan *event) {
 			return
 		}
 
-		e := event{
-			conn:   conn,
-			msg:    &m,
-			signal: make(chan struct{}),
+		e := Event{
+			Conn:   conn,
+			Msg:    &m,
+			Signal: make(chan struct{}),
 		}
 		events <- &e
-		<-e.signal
+		<-e.Signal
 	case byte(MsgIAmCamera):
 		var m IAmCamera
 		if err := m.decode(conn); err != nil {
@@ -195,13 +209,13 @@ func handleConnection(conn net.Conn, events chan *event) {
 			return
 		}
 
-		e := event{
-			conn:   conn,
-			msg:    &m,
-			signal: make(chan struct{}),
+		e := Event{
+			Conn:   conn,
+			Msg:    &m,
+			Signal: make(chan struct{}),
 		}
 		events <- &e
-		<-e.signal
+		<-e.Signal
 	case byte(MsgIAmDispatcher):
 		var m IAmDispatcher
 		if err := m.decode(conn); err != nil {
@@ -209,13 +223,13 @@ func handleConnection(conn net.Conn, events chan *event) {
 			return
 		}
 
-		e := event{
-			conn:   conn,
-			msg:    &m,
-			signal: make(chan struct{}),
+		e := Event{
+			Conn:   conn,
+			Msg:    &m,
+			Signal: make(chan struct{}),
 		}
 		events <- &e
-		<-e.signal
+		<-e.Signal
 	default:
 		sendErrorAndDisconnect(conn, fmt.Sprintf("Error: It is an error for a client to send the server a message with any message type value that is not listed below with 'Client->Server': 0x%x.", b))
 	}
@@ -228,7 +242,7 @@ func main() {
 	}
 	defer listener.Close()
 
-	events := make(chan *event)
+	events := make(chan *Event)
 
 	go serverManager(events)
 
