@@ -162,6 +162,7 @@ func serverManager(events chan *Event) {
 				delete(dispatchers, e.Conn)
 			} else {
 				cameras[e.Conn] = msg
+				e.Signal <- struct{}{}
 			}
 		case *IAmDispatcher:
 			if _, ok := cameras[e.Conn]; ok {
@@ -172,6 +173,7 @@ func serverManager(events chan *Event) {
 				delete(dispatchers, e.Conn)
 			} else {
 				dispatchers[e.Conn] = msg
+				e.Signal <- struct{}{}
 			}
 		}
 	}
@@ -181,57 +183,79 @@ func handleConnection(conn net.Conn, events chan *Event) {
 	defer conn.Close()
 
 	var b uint8
-	if err := binary.Read(conn, binary.BigEndian, &b); err != nil {
-		log.Printf("failed to read msgType: %s", err)
-		return
-	}
-
-	switch b {
-	case byte(MsgWantHeartBeat):
-		fmt.Printf("new heartbeat client: %v\n", conn)
-		var m WantHeartbeat
-		if err := m.decode(conn); err != nil {
-			log.Printf("heartbeat setup failed for client %v: %v", conn, err)
+	for {
+		if err := binary.Read(conn, binary.BigEndian, &b); err != nil {
+			log.Printf("failed to read msgType: %s", err)
 			return
 		}
 
-		e := Event{
-			Conn:   conn,
-			Msg:    &m,
-			Signal: make(chan struct{}),
-		}
-		events <- &e
-		<-e.Signal
-	case byte(MsgIAmCamera):
-		var m IAmCamera
-		if err := m.decode(conn); err != nil {
-			log.Printf("camera setup failed for client %v: %v", conn, err)
-			return
-		}
+		switch b {
+		case byte(MsgPlate):
+			fmt.Println("GOT A PLATE")
+			var m Plate
+			if err := m.decode(conn); err != nil {
+				log.Printf("failed to decode plate for client %v: %v", conn, err)
+				return
+			}
+			e := Event{
+				Conn:   conn,
+				Msg:    &m,
+				Signal: make(chan struct{}),
+			}
+			events <- &e
+			<-e.Signal
+			fmt.Println("plate done???")
+		case byte(MsgWantHeartBeat):
+			fmt.Printf("new heartbeat client: %v\n", conn)
+			var m WantHeartbeat
+			if err := m.decode(conn); err != nil {
+				log.Printf("heartbeat setup failed for client %v: %v", conn, err)
+				return
+			}
 
-		e := Event{
-			Conn:   conn,
-			Msg:    &m,
-			Signal: make(chan struct{}),
-		}
-		events <- &e
-		<-e.Signal
-	case byte(MsgIAmDispatcher):
-		var m IAmDispatcher
-		if err := m.decode(conn); err != nil {
-			log.Printf("dipatcher setup failed for client %v: %v", conn, err)
-			return
-		}
+			e := Event{
+				Conn:   conn,
+				Msg:    &m,
+				Signal: make(chan struct{}),
+			}
+			events <- &e
+			<-e.Signal
+			fmt.Println("new heartbeat client SETUP COMPLETE")
+		case byte(MsgIAmCamera):
+			fmt.Printf("new camera client: %v\n", conn)
+			var m IAmCamera
+			if err := m.decode(conn); err != nil {
+				log.Printf("camera setup failed for client %v: %v\n", conn, err)
+				return
+			}
 
-		e := Event{
-			Conn:   conn,
-			Msg:    &m,
-			Signal: make(chan struct{}),
+			e := Event{
+				Conn:   conn,
+				Msg:    &m,
+				Signal: make(chan struct{}),
+			}
+			events <- &e
+			<-e.Signal
+			fmt.Println("new camera client SETUP COMPLETE")
+		case byte(MsgIAmDispatcher):
+			fmt.Printf("new dispatcher client: %v\n", conn)
+			var m IAmDispatcher
+			if err := m.decode(conn); err != nil {
+				log.Printf("dipatcher setup failed for client %v: %v\n", conn, err)
+				return
+			}
+
+			e := Event{
+				Conn:   conn,
+				Msg:    &m,
+				Signal: make(chan struct{}),
+			}
+			events <- &e
+			<-e.Signal
+			fmt.Println("new dispatcher client SETUP COMPLETE")
+		default:
+			sendErrorAndDisconnect(conn, fmt.Sprintf("Error: It is an error for a client to send the server a message with any message type value that is not listed below with 'Client->Server': 0x%x.\n", b))
 		}
-		events <- &e
-		<-e.Signal
-	default:
-		sendErrorAndDisconnect(conn, fmt.Sprintf("Error: It is an error for a client to send the server a message with any message type value that is not listed below with 'Client->Server': 0x%x.", b))
 	}
 }
 

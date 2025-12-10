@@ -147,9 +147,16 @@ type IAmDispatcher struct {
 
 func (d *IAmDispatcher) encode(conn net.Conn) error { return nil }
 func (d *IAmDispatcher) decode(conn net.Conn) error {
-	if err := binary.Read(conn, binary.BigEndian, d); err != nil {
+	if err := binary.Read(conn, binary.BigEndian, &d.Numroads); err != nil {
 		return err
 	}
+
+	d.Roads = make([]uint16, d.Numroads)
+
+	if err := binary.Read(conn, binary.BigEndian, d.Roads); err != nil {
+		return err
+	}
+
 	return nil
 }
 
