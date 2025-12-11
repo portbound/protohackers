@@ -16,11 +16,11 @@ type Road struct {
 }
 
 type Sighting struct {
-	Road      uint16
-	Mile      uint16
-	Limit     uint16
-	Plate     str
-	timestamp uint32
+	// Road      uint16
+	Mile uint16
+	// Limit     uint16
+	// Plate     str
+	Timestamp uint32
 }
 type Event struct {
 	Conn   net.Conn
@@ -58,91 +58,109 @@ func handleHeartbeat(conn net.Conn, msg *WantHeartbeat, signal chan struct{}) {
 	signal <- struct{}{}
 }
 
+func ticketCheck(s *Sighting, plt string, sightings []*Sighting, tickets map[string]map[uint32]struct{}, camera *IAmCamera) {
+	fmt.Printf("len sightings: %d", len(sightings))
+	slices.SortFunc(sightings, func(a, b *Sighting) int {
+		if a.Timestamp < b.Timestamp {
+			return -1
+		}
+		if a.Timestamp > b.Timestamp {
+			return 1
+		}
+		return 0
+	})
+	idx := slices.Index(sightings, s)
+	fmt.Printf("idx: %v\n", idx)
+
+	fmt.Println("begin ticket check")
+	tix := tickets[plt]
+	fmt.Printf("day: %d\n", s.Timestamp/86400)
+	if _, ok := tix[s.Timestamp/86400]; ok { // TODO need to check this logic
+		return // we have a ticket for this day already and should continue
+	}
+
+	curr := sightings[idx]
+
+	if idx > 0 {
+		fmt.Println("checking left")
+		left := sightings[idx-1]
+		distance := curr.Mile - left.Mile
+		time := curr.Timestamp - left.Timestamp
+		speed := (float64(distance) / float64(time)) * 3600.0
+
+		if speed > float64(camera.Limit) {
+			t := &Ticket{
+				Mile1:      left.Mile,
+				Timestamp1: left.Timestamp,
+				Mile2:      curr.Mile,
+				Timestamp2: curr.Timestamp,
+				Speed:      uint16(speed) * 100,
+			}
+			fmt.Printf("ticket: %+v\n", t)
+			tix[t.Timestamp1/86400] = struct{}{}
+			tix[t.Timestamp2/86400] = struct{}{}
+			return
+		}
+	}
+
+	if idx < len(sightings) {
+		fmt.Println("checking right")
+		right := sightings[idx+1]
+		distance := curr.Mile - right.Mile
+		time := curr.Timestamp - right.Timestamp
+		speed := (float64(distance) / float64(time)) * 3600.0 // TODO need to check speed calc 
+
+		if speed > float64(camera.Limit) {
+			t := &Ticket{
+				Mile1:      right.Mile,
+				Timestamp1: right.Timestamp,
+				Mile2:      curr.Mile,
+				Timestamp2: curr.Timestamp,
+				Speed:      uint16(speed) * 100,
+			}
+			fmt.Printf("ticket: %+v\n", t)
+			tix[t.Timestamp1/86400] = struct{}{}
+			tix[t.Timestamp2/86400] = struct{}{}
+		}
+	}
+
+}
 func serverManager(events chan *Event) {
 	cameras := make(map[net.Conn]*IAmCamera)
 	dispatchers := make(map[net.Conn]*IAmDispatcher)
 	var tickets map[string]map[uint32]struct{} // map[plate]map[day]struct{}
 	var heartbeats = make(map[net.Conn]*WantHeartbeat)
-	var roads = make(map[uint16]*Road)
+	var roads = make(map[uint16]map[string][]*Sighting)
 
 	for e := range events {
 		switch msg := e.Msg.(type) {
 		case *Plate:
+			fmt.Printf("plate: %+v\n", msg)
 			if camera, ok := cameras[e.Conn]; ok {
 				road, ok := roads[camera.Road]
 				if !ok {
-					log.Printf("road for camera %v does not exist", e.Conn)
-					continue
+					fmt.Printf("creating road for %d\n", camera.Road)
+					roads[camera.Road] = make(map[string][]*Sighting)
+					road = roads[camera.Road]
+				} else {
+					fmt.Printf("road exists for %d\n", camera.Road)
 				}
 
 				s := Sighting{
-					Road:      camera.Road,
 					Mile:      camera.Mile,
-					Limit:     camera.Limit,
-					Plate:     msg.Plate,
-					timestamp: msg.Timestamp,
+					Timestamp: msg.Timestamp,
 				}
+				fmt.Printf("sighting: %+v\n", s)
+				plt := string(msg.Plate.Body)
+				road[plt] = append(road[plt], &s)
+				fmt.Printf("appended sightings: %+v\n", road[plt])
 
-				sightings := road.Cars[string(s.Plate.Body)]
-				sightings = append(sightings, &s)
+				fmt.Println(len(road[plt]))
 
-				slices.SortFunc(sightings, func(a, b *Sighting) int {
-					if a.timestamp < b.timestamp {
-						return -1
-					}
-					if a.timestamp > b.timestamp {
-						return 1
-					}
-					return 0
-				})
-				idx := slices.Index(sightings, &s)
-
-				tix := tickets[string(s.Plate.Body)]
-				if _, ok := tix[s.timestamp/86400]; ok { // TODO need to check this logic
-					continue // we have a ticket for this day already and should continue
+				if len(road[plt]) == 1 {
+					continue
 				}
-
-				curr := sightings[idx]
-
-				if idx > 0 {
-					left := sightings[idx-1]
-					distance := curr.Mile - left.Mile
-					time := curr.timestamp - left.timestamp
-					speed := (float64(distance) / float64(time)) * 3600.0
-
-					if speed > float64(curr.Limit) {
-						t := &Ticket{
-							Mile1:      left.Mile,
-							Timestamp1: left.timestamp,
-							Mile2:      curr.Mile,
-							Timestamp2: curr.timestamp,
-							Speed:      uint16(speed) * 100,
-						}
-						tix[t.Timestamp1/86400] = struct{}{}
-						tix[t.Timestamp2/86400] = struct{}{}
-						continue
-					}
-				}
-
-				if idx < len(sightings) {
-					right := sightings[idx+1]
-					distance := curr.Mile - right.Mile
-					time := curr.timestamp - right.timestamp
-					speed := (float64(distance) / float64(time)) * 3600.0
-
-					if speed > float64(curr.Limit) {
-						t := &Ticket{
-							Mile1:      right.Mile,
-							Timestamp1: right.timestamp,
-							Mile2:      curr.Mile,
-							Timestamp2: curr.timestamp,
-							Speed:      uint16(speed) * 100,
-						}
-						tix[t.Timestamp1/86400] = struct{}{}
-						tix[t.Timestamp2/86400] = struct{}{}
-					}
-				}
-
+				ticketCheck(&s, plt, road[plt], tickets, camera)
 			} else {
 				sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has not identified itself as a camera to send a Plate message.", e.Conn))
 			}
@@ -191,7 +209,6 @@ func handleConnection(conn net.Conn, events chan *Event) {
 
 		switch b {
 		case byte(MsgPlate):
-			fmt.Println("GOT A PLATE")
 			var m Plate
 			if err := m.decode(conn); err != nil {
 				log.Printf("failed to decode plate for client %v: %v", conn, err)
