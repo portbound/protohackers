@@ -32,16 +32,26 @@ type str struct {
 	Body []byte
 }
 
-func (s *str) encode(conn net.Conn) error { return nil }
+func (s *str) encode(conn net.Conn) error {
+	if err := binary.Write(conn, binary.BigEndian, s.Len); err != nil {
+		return err
+	}
+
+	b := make([]byte, s.Len)
+	b = s.Body
+	if err := binary.Write(conn, binary.BigEndian, b); err != nil {
+		return err
+	}
+
+	return nil
+}
 func (s *str) decode(conn net.Conn) error {
-	err := binary.Read(conn, binary.BigEndian, &s.Len)
-	if err != nil {
+	if err := binary.Read(conn, binary.BigEndian, &s.Len); err != nil {
 		return fmt.Errorf("read str len err: %w", err)
 	}
 
 	s.Body = make([]byte, s.Len)
-	_, err = io.ReadFull(conn, s.Body)
-	if err != nil {
+	if _, err := io.ReadFull(conn, s.Body); err != nil {
 		return fmt.Errorf("read str body err: %w", err)
 	}
 
@@ -96,7 +106,30 @@ type Ticket struct {
 }
 
 func (t *Ticket) encode(conn net.Conn) error {
-	if err := binary.Write(conn, binary.BigEndian, t); err != nil {
+	if err := binary.Write(conn, binary.BigEndian, byte(MsgTicket)); err != nil {
+		return err
+	}
+
+	if err := t.Plate.encode(conn); err != nil {
+		return err
+	}
+
+	if err := binary.Write(conn, binary.BigEndian, t.Road); err != nil {
+		return err
+	}
+	if err := binary.Write(conn, binary.BigEndian, t.Mile1); err != nil {
+		return err
+	}
+	if err := binary.Write(conn, binary.BigEndian, t.Timestamp1); err != nil {
+		return err
+	}
+	if err := binary.Write(conn, binary.BigEndian, t.Mile2); err != nil {
+		return err
+	}
+	if err := binary.Write(conn, binary.BigEndian, t.Timestamp2); err != nil {
+		return err
+	}
+	if err := binary.Write(conn, binary.BigEndian, t.Speed); err != nil {
 		return err
 	}
 	return nil
