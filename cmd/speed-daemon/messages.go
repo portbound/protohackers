@@ -22,17 +22,17 @@ const (
 // Message Protocol Spec
 // each message declares its type in a single uint8
 
-type message interface {
+type Message interface {
 	encode(net.Conn) error
 	decode(net.Conn) error
 }
 
-type str struct {
+type Str struct {
 	Len  uint8
 	Body []byte
 }
 
-func (s *str) encode(conn net.Conn) error {
+func (s *Str) encode(conn net.Conn) error {
 	if err := binary.Write(conn, binary.BigEndian, s.Len); err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func (s *str) encode(conn net.Conn) error {
 
 	return nil
 }
-func (s *str) decode(conn net.Conn) error {
+func (s *Str) decode(conn net.Conn) error {
 	if err := binary.Read(conn, binary.BigEndian, &s.Len); err != nil {
 		return fmt.Errorf("read str len err: %w", err)
 	}
@@ -59,7 +59,7 @@ func (s *str) decode(conn net.Conn) error {
 }
 
 type Error struct {
-	Msg str
+	Msg Str
 }
 
 func (e *Error) encode(conn net.Conn) error {
@@ -76,7 +76,7 @@ func (e *Error) encode(conn net.Conn) error {
 func (e *Error) decode(conn net.Conn) error { return nil }
 
 type Plate struct {
-	Plate     str
+	Plate     Str
 	Timestamp uint32
 }
 
@@ -96,7 +96,7 @@ func (p *Plate) decode(conn net.Conn) error {
 }
 
 type Ticket struct {
-	Plate      str
+	Plate      Str
 	Road       uint16
 	Mile1      uint16
 	Timestamp1 uint32
