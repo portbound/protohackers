@@ -39,8 +39,8 @@ func NewServer() *Server {
 		Cameras:     make(map[net.Conn]*IAmCamera),
 		Dispatchers: make(map[net.Conn]*IAmDispatcher),
 		Heartbeats:  make(map[net.Conn]*WantHeartbeat),
-		Roads:       make(map[uint16]map[string][]*Sighting),
-		Tickets:     make(map[string]map[uint32]struct{}), // map[plate]map[day]struct{}
+		Roads:       make(map[uint16]map[string][]*Sighting), // map[road num]map[plate]*[]Sighting
+		Tickets:     make(map[string]map[uint32]struct{}),    // map[plate]map[day]struct{}
 	}
 }
 
@@ -109,7 +109,6 @@ func (s *Server) HandleEvent(e *Event) {
 			delete(s.Dispatchers, e.Conn)
 		} else {
 			s.Cameras[e.Conn] = msg
-			e.Signal <- struct{}{}
 		}
 	case *IAmDispatcher:
 		if _, ok := s.Cameras[e.Conn]; ok {
@@ -120,7 +119,6 @@ func (s *Server) HandleEvent(e *Event) {
 			delete(s.Dispatchers, e.Conn)
 		} else {
 			s.Dispatchers[e.Conn] = msg
-			e.Signal <- struct{}{}
 		}
 	}
 }
@@ -271,7 +269,6 @@ func HandleConnection(conn net.Conn, events chan *Event) {
 				Signal: make(chan struct{}),
 			}
 			events <- &e
-			<-e.Signal
 		case byte(MsgIAmDispatcher):
 			var m IAmDispatcher
 			if err := m.decode(conn); err != nil {
