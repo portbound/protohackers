@@ -1,95 +1,23 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"reflect"
 	"testing"
 	"time"
 )
 
-// func TestHandleConnection(t *testing.T) {
-// 	tests := []struct {
-// 		name          string
-// 		input         []byte
-// 		expectMsgType Message
-// 		validate      func(t *testing.T, msg Message)
-// 	}{
-// 		{
-// 			name:  "IAmCamera message",
-// 			input: []byte{0x80, 0x00, 0x7b, 0x00, 0x08, 0x00, 0x3c},
-// 			validate: func(t *testing.T, msg Message) {
-// 				camera, ok := msg.(*IAmCamera)
-// 				if !ok {
-// 					t.Fatalf("expected *IAmCamera, got: %T", msg)
-// 				}
-// 				if camera.Road != 123 {
-// 					t.Errorf("want: Road 123, got: %d", camera.Road)
-// 				}
-// 				if camera.Mile != 8 {
-// 					t.Errorf("want: Mile 8, got: %d", camera.Mile)
-// 				}
-// 				if camera.Limit != 60 {
-// 					t.Errorf("want: Limit 60, got: %d", camera.Limit)
-// 				}
-// 			},
-// 		},
-// 		{
-// 			name:  "Plate message",
-// 			input: []byte{0x20, 0x04, 0x55, 0x4e, 0x31, 0x58, 0x00, 0x00, 0x03, 0xe8},
-// 			validate: func(t *testing.T, msg Message) {
-// 				plate, ok := msg.(*Plate)
-// 				if !ok {
-// 					t.Fatalf("expected *Plate, got: %T", msg)
-// 				}
-//
-// 				wPlate := "UN1X"
-// 				gPlate := string(plate.Plate.Body)
-// 				if wPlate != gPlate {
-// 					t.Errorf("want: %s, got: %s", wPlate, gPlate)
-// 				}
-//
-// 				wTimestamp := uint32(45)
-// 				gTimestamp := plate.Timestamp
-// 				if wTimestamp != gTimestamp {
-// 					t.Errorf("want: %d, got: %d", wTimestamp, gTimestamp)
-// 				}
-// 			},
-// 		},
-// 	}
-// 	for _, tt := range tests {
-// 		t.Run(tt.name, func(t *testing.T) {
-// 			server, client := net.Pipe()
-// 			defer server.Close()
-// 			defer client.Close()
-//
-// 			events := make(chan *Event, 1)
-// 			go HandleConnection(server, events)
-//
-// 			_, err := client.Write(tt.input)
-// 			if err != nil {
-// 				t.Fatalf("failed to write to client connection: %v", err)
-// 			}
-//
-// 			select {
-// 			case event := <-events:
-//
-// 			case <-time.After(1 * time.Second):
-// 				t.Fatalf("timed out waiting for event from HandleConnection")
-// 			}
-// 		})
-// 	}
-// }
-
 func TestServer_HandleEvent(t *testing.T) {
 	tests := []struct {
 		name     string
 		msg      Message
+		setup    func(t *testing.T, e *Event, s *Server, c net.Conn)
 		validate func(t *testing.T, e *Event, s *Server, c net.Conn)
 	}{
 		{
-			name: "Camera Msg Received: Happy Path",
-			msg:  &IAmCamera{Road: 123, Mile: 8, Limit: 60},
+			name:  "Camera Msg Received: Success",
+			msg:   &IAmCamera{Road: 123, Mile: 8, Limit: 60},
+			setup: func(t *testing.T, e *Event, s *Server, c net.Conn) {},
 			validate: func(t *testing.T, e *Event, s *Server, c net.Conn) {
 				if len(s.Cameras) != 1 {
 					t.Fatalf("expected 1 camera, got %d", len(s.Cameras))
@@ -105,11 +33,12 @@ func TestServer_HandleEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "Dispatcher Msg Recieved: Happy Path",
+			name: "Dispatcher Msg Recieved: Success",
 			msg: &IAmDispatcher{
 				Numroads: 1,
 				Roads:    []uint16{123},
 			},
+			setup: func(t *testing.T, e *Event, s *Server, c net.Conn) {},
 			validate: func(t *testing.T, e *Event, s *Server, c net.Conn) {
 				if len(s.Dispatchers) != 1 {
 					t.Fatalf("expected 1 dispatcher, got %d", len(s.Dispatchers))
@@ -124,10 +53,11 @@ func TestServer_HandleEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "WantHeartBeat Msg Received: Happy Path",
+			name: "WantHeartBeat Msg Received: Success",
 			msg: &WantHeartbeat{
 				Interval: 2,
 			},
+			setup: func(t *testing.T, e *Event, s *Server, c net.Conn) {},
 			validate: func(t *testing.T, e *Event, s *Server, c net.Conn) {
 				type readResult struct {
 					data []byte
@@ -144,13 +74,12 @@ func TestServer_HandleEvent(t *testing.T) {
 						}
 					}
 				}()
-				for i := range 4 {
+				for range 4 {
 					select {
 					case result := <-ch:
 						if result.err != nil {
 							t.Fatalf("read failed: %v", result.err)
 						}
-						fmt.Println(i)
 					case <-time.After(2 * time.Second):
 						t.Fatalf("timeout waiting for a heartbeat")
 					}
@@ -158,12 +87,63 @@ func TestServer_HandleEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "Plate Msg Received: Happy Path",
-			msg:  &Plate{},
+			name: "Plate Msg Received: Success",
+			msg: &Plate{
+				Plate: Str{
+					Len:  4,
+					Body: []byte{'U', 'N', 'I', 'X'},
+				},
+				Timestamp: 0,
+			},
+			setup: func(t *testing.T, e *Event, s *Server, c net.Conn) {
+				s.Cameras = make(map[net.Conn]*IAmCamera)
+				camera := &IAmCamera{Road: 123, Mile: 8, Limit: 60}
+				s.Cameras[e.Conn] = camera
+			},
+			validate: func(t *testing.T, e *Event, s *Server, c net.Conn) {
+				camera := s.Cameras[e.Conn]
+				road := s.Roads[camera.Road]
+
+				if len(road) != 1 {
+					t.Fatalf("expected 1 plate, got %d", len(road))
+				}
+
+				if _, ok := road["UNIX"]; !ok {
+					t.Fatalf("plate UNIX was not added to map")
+				}
+			},
 		},
 		{
 			name: "Plate Msg Received: Send a Ticket",
-			msg:  &Plate{},
+			msg: &Plate{
+				Plate: Str{
+					Len:  4,
+					Body: []byte{'U', 'N', 'I', 'X'},
+				},
+				Timestamp: 45,
+			},
+			setup: func(t *testing.T, e *Event, s *Server, c net.Conn) {
+				s.Cameras = make(map[net.Conn]*IAmCamera)
+				camera := &IAmCamera{Road: 123, Mile: 9, Limit: 60}
+				s.Cameras[e.Conn] = camera
+
+				s.Roads[camera.Road] = make(map[string][]*Sighting)
+				road := s.Roads[camera.Road]
+				road["UNIX"] = append(road["UNIX"], &Sighting{
+					Mile:      8,
+					Timestamp: 0,
+				})
+
+				s.Dispatchers = make(map[net.Conn]*IAmDispatcher)
+				dispatcher := &IAmDispatcher{
+					Numroads: 1,
+					Roads:    []uint16{123},
+				}
+				foo, conn := net.Pipe()
+				defer foo.Close()
+				defer conn.Close()
+				s.Dispatchers[conn] = dispatcher
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -179,6 +159,7 @@ func TestServer_HandleEvent(t *testing.T) {
 				Signal: make(chan struct{}),
 			}
 
+			tt.setup(t, e, s, c1)
 			s.HandleEvent(e)
 			tt.validate(t, e, s, c1)
 		})

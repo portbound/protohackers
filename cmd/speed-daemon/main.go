@@ -53,73 +53,80 @@ func (s *Server) Run(events chan *Event) {
 func (s *Server) HandleEvent(e *Event) {
 	switch msg := e.Msg.(type) {
 	case *Plate:
-		if camera, ok := s.Cameras[e.Conn]; ok {
-			road, ok := s.Roads[camera.Road]
-			if !ok {
-				s.Roads[camera.Road] = make(map[string][]*Sighting)
-				road = s.Roads[camera.Road]
-			}
-
-			sg := Sighting{
-				Mile:      camera.Mile,
-				Timestamp: msg.Timestamp,
-			}
-			// plate := str{
-			// 	Len:  msg.Plate.Len,
-			// 	Body: msg.Plate.Body,
-			// }
-			p := string(msg.Plate.Body)
-			road[p] = append(road[p], &sg)
-
-			if len(road[p]) == 1 {
-				break
-			}
-
-			ticket := ticketCheck(&sg, p, road[p], s.Tickets, camera)
-			ticket.Plate = Str{
-				Len:  msg.Plate.Len,
-				Body: msg.Plate.Body,
-			}
-			ticket.Road = camera.Road
-			fmt.Printf("%+v\n", ticket)
-			for conn, dispatcher := range s.Dispatchers {
-				if slices.Contains(dispatcher.Roads, camera.Road) {
-					if err := ticket.encode(conn); err != nil {
-						log.Fatalf("failed to send ticket to client %v: %v", conn, err)
-					}
-					break
-				}
-			}
-		} else {
+		camera, ok := s.Cameras[e.Conn]
+		if !ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has not identified itself as a camera to send a Plate message.", e.Conn))
 		}
+
+		road, ok := s.Roads[camera.Road]
+		if !ok {
+			s.Roads[camera.Road] = make(map[string][]*Sighting)
+			road = s.Roads[camera.Road]
+		}
+
+		sighting := Sighting{
+			Mile:      camera.Mile,
+			Timestamp: msg.Timestamp,
+		}
+
+		plate := string(msg.Plate.Body)
+		road[plate] = append(road[plate], &sighting)
+
+		if len(road[plate]) == 1 {
+			break
+		}
+
+		ticket := ticketCheck(&sighting, plate, road[plate], s.Tickets, camera)
+		ticket.Plate = Str{
+			Len:  msg.Plate.Len,
+			Body: msg.Plate.Body,
+		}
+		ticket.Road = camera.Road
+		for conn, dispatcher := range s.Dispatchers {
+			if slices.Contains(dispatcher.Roads, camera.Road) {
+				if err := ticket.encode(conn); err != nil {
+					log.Fatalf("failed to send ticket to client %v: %v", conn, err)
+				}
+				break
+			}
+		}
+
 	case *WantHeartbeat:
 		if _, ok := s.Heartbeats[e.Conn]; ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client to send multiple WantHeartbeat messages on a single connection", e.Conn))
-		} else {
-			s.Heartbeats[e.Conn] = msg
-			go handleHeartbeat(e.Conn, msg, e.Signal)
+			break
 		}
+
+		s.Heartbeats[e.Conn] = msg
+		go handleHeartbeat(e.Conn, msg, e.Signal)
 	case *IAmCamera:
 		if _, ok := s.Cameras[e.Conn]; ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmCamera message.", e.Conn))
 			delete(s.Cameras, e.Conn)
-		} else if _, ok := s.Dispatchers[e.Conn]; ok {
+			break
+		}
+
+		if _, ok := s.Dispatchers[e.Conn]; ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmCamera message.", e.Conn))
 			delete(s.Dispatchers, e.Conn)
-		} else {
-			s.Cameras[e.Conn] = msg
+			break
 		}
+
+		s.Cameras[e.Conn] = msg
 	case *IAmDispatcher:
 		if _, ok := s.Cameras[e.Conn]; ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmDispatcher message.", e.Conn))
 			delete(s.Cameras, e.Conn)
-		} else if _, ok := s.Dispatchers[e.Conn]; ok {
+			break
+		}
+
+		if _, ok := s.Dispatchers[e.Conn]; ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmDispatcher message.", e.Conn))
 			delete(s.Dispatchers, e.Conn)
-		} else {
-			s.Dispatchers[e.Conn] = msg
+			break
 		}
+
+		s.Dispatchers[e.Conn] = msg
 	}
 }
 
@@ -176,7 +183,6 @@ func ticketCheck(s *Sighting, plt string, sightings []*Sighting, tickets map[str
 
 	var t *Ticket
 	if idx > 0 {
-		fmt.Println("checking left")
 		left := sightings[idx-1]
 		distance := curr.Mile - left.Mile
 		time := curr.Timestamp - left.Timestamp
@@ -196,7 +202,6 @@ func ticketCheck(s *Sighting, plt string, sightings []*Sighting, tickets map[str
 	}
 
 	if idx < len(sightings) {
-		fmt.Println("checking right")
 		right := sightings[idx+1]
 		distance := right.Mile - curr.Mile
 		time := right.Timestamp - curr.Timestamp
