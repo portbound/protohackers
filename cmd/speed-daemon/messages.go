@@ -7,16 +7,16 @@ import (
 	"net"
 )
 
-type typ uint8
+type msgType uint8
 
 const (
-	MsgError         typ = 0x10
-	MsgPlate         typ = 0x20
-	MsgTicket        typ = 0x21
-	MsgWantHeartBeat typ = 0x40
-	MsgHeartBeat     typ = 0x41
-	MsgIAmCamera     typ = 0x80
-	MsgIAmDispatcher typ = 0x81
+	MsgError         msgType = 0x10
+	MsgPlate         msgType = 0x20
+	MsgTicket        msgType = 0x21
+	MsgWantHeartBeat msgType = 0x40
+	MsgHeartBeat     msgType = 0x41
+	MsgIAmCamera     msgType = 0x80
+	MsgIAmDispatcher msgType = 0x81
 )
 
 // Message Protocol Spec

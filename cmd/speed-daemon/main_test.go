@@ -154,9 +154,8 @@ func TestServer_HandleEvent(t *testing.T) {
 			defer c2.Close()
 
 			e := &Event{
-				Conn:   c2,
-				Msg:    tt.msg,
-				Signal: make(chan struct{}),
+				Conn: c2,
+				Msg:  tt.msg,
 			}
 
 			tt.setup(t, e, s, c1)

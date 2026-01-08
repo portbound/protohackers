@@ -21,9 +21,8 @@ type Sighting struct {
 }
 
 type Event struct {
-	Conn   net.Conn
-	Msg    Message
-	Signal chan struct{}
+	Conn net.Conn
+	Msg  Message
 }
 
 type Server struct {
@@ -69,27 +68,34 @@ func (s *Server) HandleEvent(e *Event) {
 			Timestamp: msg.Timestamp,
 		}
 
-		plate := string(msg.Plate.Body)
-		road[plate] = append(road[plate], &sighting)
+		plate := msg.Plate
+		road[string(plate.Body)] = append(road[string(plate.Body)], &sighting)
 
-		if len(road[plate]) == 1 {
+		if len(road[string(plate.Body)]) == 1 {
 			break
 		}
 
-		ticket := ticketCheck(&sighting, plate, road[plate], s.Tickets, camera)
-		ticket.Plate = Str{
-			Len:  msg.Plate.Len,
-			Body: msg.Plate.Body,
-		}
-		ticket.Road = camera.Road
-		for conn, dispatcher := range s.Dispatchers {
-			if slices.Contains(dispatcher.Roads, camera.Road) {
-				if err := ticket.encode(conn); err != nil {
-					log.Fatalf("failed to send ticket to client %v: %v", conn, err)
-				}
-				break
-			}
-		}
+		// make a chan and pass this ticket into it for the ticketManager
+		// this needs to be created in main though so events and ticketManager/Processor can communicate
+		ch := make(chan *Ticket)
+		// if the ticket is nil, we can ignore this in the ticketManager
+		ch <- ticketCheck(&sighting, plate, road[string(plate.Body)], s.Tickets, camera)
+
+		// ticket := ticketCheck(&sighting, plate, road[string(plate.Body)], s.Tickets, camera)
+		// offload this logic to the ticket checker
+		// ticket.Plate = Str{
+		// 	Len:  msg.Plate.Len,
+		// 	Body: msg.Plate.Body,
+		// }
+		// ticket.Road = camera.Road
+		// for conn, dispatcher := range s.Dispatchers {
+		// 	if slices.Contains(dispatcher.Roads, camera.Road) {
+		// 		if err := ticket.encode(conn); err != nil {
+		// 			log.Fatalf("failed to send ticket to client %v: %v", conn, err)
+		// 		}
+		// 		break
+		// 	}
+		// }
 
 	case *WantHeartbeat:
 		if _, ok := s.Heartbeats[e.Conn]; ok {
@@ -98,7 +104,7 @@ func (s *Server) HandleEvent(e *Event) {
 		}
 
 		s.Heartbeats[e.Conn] = msg
-		go handleHeartbeat(e.Conn, msg, e.Signal)
+		go handleHeartbeat(e.Conn, msg)
 	case *IAmCamera:
 		if _, ok := s.Cameras[e.Conn]; ok {
 			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmCamera message.", e.Conn))
@@ -142,7 +148,7 @@ func sendErrorAndDisconnect(conn net.Conn, msg string) {
 	}
 }
 
-func handleHeartbeat(conn net.Conn, msg *WantHeartbeat, signal chan struct{}) {
+func handleHeartbeat(conn net.Conn, msg *WantHeartbeat) {
 	if msg.Interval == 0 {
 		return
 	}
@@ -155,10 +161,9 @@ func handleHeartbeat(conn net.Conn, msg *WantHeartbeat, signal chan struct{}) {
 			break
 		}
 	}
-	signal <- struct{}{}
 }
 
-func ticketCheck(s *Sighting, plt string, sightings []*Sighting, tickets map[string]map[uint32]struct{}, camera *IAmCamera) *Ticket {
+func ticketCheck(s *Sighting, plt Str, sightings []*Sighting, tickets map[string]map[uint32]struct{}, camera *IAmCamera) *Ticket {
 	slices.SortFunc(sightings, func(a, b *Sighting) int {
 		if a.Timestamp < b.Timestamp {
 			return -1
@@ -170,10 +175,10 @@ func ticketCheck(s *Sighting, plt string, sightings []*Sighting, tickets map[str
 	})
 	idx := slices.Index(sightings, s)
 
-	tix, ok := tickets[plt]
+	tix, ok := tickets[string(plt.Body)]
 	if !ok {
 		tix = make(map[uint32]struct{})
-		tickets[plt] = tix
+		tickets[string(plt.Body)] = tix
 	}
 	if _, ok := tix[s.Timestamp/86400]; ok { // TODO need to check this logic
 		return nil // we have a ticket for this day already and should continue
@@ -223,74 +228,60 @@ func ticketCheck(s *Sighting, plt string, sightings []*Sighting, tickets map[str
 	return nil
 }
 
+func ParseMessage(conn net.Conn) (uint8, Message) {
+	var b uint8
+
+	if err := binary.Read(conn, binary.BigEndian, &b); err != nil {
+		log.Printf("failed to read msgType: %s", err)
+		return 0, nil
+	}
+
+	switch b {
+	case byte(MsgPlate):
+		var m Plate
+		if err := m.decode(conn); err != nil {
+			log.Printf("failed to decode plate for client %v: %v", conn, err)
+			return b, nil
+		}
+		return b, &m
+	case byte(MsgWantHeartBeat):
+		var m WantHeartbeat
+		if err := m.decode(conn); err != nil {
+			log.Printf("heartbeat setup failed for client %v: %v", conn, err)
+			return b, nil
+		}
+		return b, &m
+	case byte(MsgIAmCamera):
+		var m IAmCamera
+		if err := m.decode(conn); err != nil {
+			log.Printf("camera setup failed for client %v: %v\n", conn, err)
+			return b, nil
+		}
+		return b, &m
+	case byte(MsgIAmDispatcher):
+		var m IAmDispatcher
+		if err := m.decode(conn); err != nil {
+			log.Printf("dipatcher setup failed for client %v: %v\n", conn, err)
+			return b, nil
+		}
+	default:
+		sendErrorAndDisconnect(conn, fmt.Sprintf("Error: It is an error for a client to send the server a message with any message type value that is not listed below with 'Client->Server': 0x%x.\n", b))
+		return 0, nil
+	}
+}
+
 func HandleConnection(conn net.Conn, events chan *Event) {
 	defer conn.Close()
 
-	var b uint8
+	// we should store the identity here to limit what messages can and can't be sent. The HandleEvent() method shouldn't have to handle disconnects for invalid behavior.
+
 	for {
-		if err := binary.Read(conn, binary.BigEndian, &b); err != nil {
-			log.Printf("failed to read msgType: %s", err)
-			return
+		e := Event{
+			Conn: conn,
+			Msg:  ParseMessage(conn),
 		}
 
-		switch b {
-		case byte(MsgPlate):
-			var m Plate
-			if err := m.decode(conn); err != nil {
-				log.Printf("failed to decode plate for client %v: %v", conn, err)
-				return
-			}
-			e := Event{
-				Conn:   conn,
-				Msg:    &m,
-				Signal: make(chan struct{}),
-			}
-			events <- &e
-			<-e.Signal
-		case byte(MsgWantHeartBeat):
-			var m WantHeartbeat
-			if err := m.decode(conn); err != nil {
-				log.Printf("heartbeat setup failed for client %v: %v", conn, err)
-				return
-			}
-
-			e := Event{
-				Conn:   conn,
-				Msg:    &m,
-				Signal: make(chan struct{}),
-			}
-			events <- &e
-			<-e.Signal
-		case byte(MsgIAmCamera):
-			var m IAmCamera
-			if err := m.decode(conn); err != nil {
-				log.Printf("camera setup failed for client %v: %v\n", conn, err)
-				return
-			}
-
-			e := Event{
-				Conn:   conn,
-				Msg:    &m,
-				Signal: make(chan struct{}),
-			}
-			events <- &e
-		case byte(MsgIAmDispatcher):
-			var m IAmDispatcher
-			if err := m.decode(conn); err != nil {
-				log.Printf("dipatcher setup failed for client %v: %v\n", conn, err)
-				return
-			}
-
-			e := Event{
-				Conn:   conn,
-				Msg:    &m,
-				Signal: make(chan struct{}),
-			}
-			events <- &e
-			<-e.Signal
-		default:
-			sendErrorAndDisconnect(conn, fmt.Sprintf("Error: It is an error for a client to send the server a message with any message type value that is not listed below with 'Client->Server': 0x%x.\n", b))
-		}
+		events <- &e
 	}
 }
 
