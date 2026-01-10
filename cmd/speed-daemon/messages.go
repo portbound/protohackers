@@ -58,12 +58,12 @@ func (s *Str) decode(conn net.Conn) error {
 	return nil
 }
 
-type Error struct {
-	Msg Str
+type ErrorMessage struct {
+	Str Str
 }
 
-func (e *Error) encode(conn net.Conn) error {
-	err := e.Msg.encode(conn)
+func (e *ErrorMessage) encode(conn net.Conn) error {
+	err := e.Str.encode(conn)
 	if err != nil {
 		return fmt.Errorf("failed to encode str: %w", err)
 	}
@@ -73,7 +73,7 @@ func (e *Error) encode(conn net.Conn) error {
 	}
 	return nil
 }
-func (e *Error) decode(conn net.Conn) error { return nil }
+func (e *ErrorMessage) decode(conn net.Conn) error { return nil }
 
 type Plate struct {
 	Plate     Str
@@ -193,7 +193,10 @@ func (d *IAmDispatcher) decode(conn net.Conn) error {
 	return nil
 }
 
-type ClientDisconnect struct{}
+type ClientDisconnect struct {
+	clientIdentity uint8
+	errMsg         string
+}
 
 func (c *ClientDisconnect) encode(conn net.Conn) error { return nil }
 func (c *ClientDisconnect) decode(conn net.Conn) error { return nil }
