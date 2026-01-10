@@ -52,10 +52,7 @@ func (s *Server) Run(events chan *Event) {
 func (s *Server) HandleEvent(e *Event) {
 	switch msg := e.Msg.(type) {
 	case *Plate:
-		camera, ok := s.Cameras[e.Conn]
-		if !ok {
-			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has not identified itself as a camera to send a Plate message.", e.Conn))
-		}
+		camera := s.Cameras[e.Conn]
 
 		road, ok := s.Roads[camera.Road]
 		if !ok {
@@ -98,53 +95,31 @@ func (s *Server) HandleEvent(e *Event) {
 		// }
 
 	case *WantHeartbeat:
-		if _, ok := s.Heartbeats[e.Conn]; ok {
-			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client to send multiple WantHeartbeat messages on a single connection", e.Conn))
-			break
-		}
-
 		s.Heartbeats[e.Conn] = msg
 		go handleHeartbeat(e.Conn, msg)
 	case *IAmCamera:
-		if _, ok := s.Cameras[e.Conn]; ok {
-			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmCamera message.", e.Conn))
-			delete(s.Cameras, e.Conn)
-			break
-		}
-
-		if _, ok := s.Dispatchers[e.Conn]; ok {
-			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmCamera message.", e.Conn))
-			delete(s.Dispatchers, e.Conn)
-			break
-		}
-
 		s.Cameras[e.Conn] = msg
 	case *IAmDispatcher:
-		if _, ok := s.Cameras[e.Conn]; ok {
-			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a camera to send an IAmDispatcher message.", e.Conn))
-			delete(s.Cameras, e.Conn)
-			break
-		}
-
-		if _, ok := s.Dispatchers[e.Conn]; ok {
-			sendErrorAndDisconnect(e.Conn, fmt.Sprintf("Client: %v\nError: It is an error for a client that has already identified itself as a ticket dispatcher to send an IAmDispatcher message.", e.Conn))
-			delete(s.Dispatchers, e.Conn)
-			break
-		}
-
 		s.Dispatchers[e.Conn] = msg
-	}
-}
+	case *ClientDisconnect:
+		defer e.Conn.Close()
 
-func sendErrorAndDisconnect(conn net.Conn, msg string) {
-	defer conn.Close()
-	var e Error
-	e.Msg.Body = fmt.Append(e.Msg.Body, msg)
-	err := e.encode(conn)
-	if err != nil {
-		log.Printf("failed to send Error to client %v: %v", conn, err)
-	} else {
-		log.Print(msg)
+		if msg.clientIdentity == byte(MsgIAmCamera) {
+			delete(s.Cameras, e.Conn)
+		}
+
+		if msg.clientIdentity == byte(MsgIAmDispatcher) {
+			delete(s.Dispatchers, e.Conn)
+		}
+
+		var m ErrorMessage
+		m.Str.Body = fmt.Append(m.Str.Body, msg)
+		err := m.encode(e.Conn)
+		if err != nil {
+			log.Printf("failed to send ErrorMessage to client %v: %v", e.Conn, err)
+		} else {
+			log.Println(msg)
+		}
 	}
 }
 
@@ -228,60 +203,123 @@ func ticketCheck(s *Sighting, plt Str, sightings []*Sighting, tickets map[string
 	return nil
 }
 
-func ParseMessage(conn net.Conn) (uint8, Message) {
-	var b uint8
-
-	if err := binary.Read(conn, binary.BigEndian, &b); err != nil {
-		log.Printf("failed to read msgType: %s", err)
-		return 0, nil
-	}
-
-	switch b {
-	case byte(MsgPlate):
-		var m Plate
-		if err := m.decode(conn); err != nil {
-			log.Printf("failed to decode plate for client %v: %v", conn, err)
-			return b, nil
-		}
-		return b, &m
-	case byte(MsgWantHeartBeat):
-		var m WantHeartbeat
-		if err := m.decode(conn); err != nil {
-			log.Printf("heartbeat setup failed for client %v: %v", conn, err)
-			return b, nil
-		}
-		return b, &m
-	case byte(MsgIAmCamera):
-		var m IAmCamera
-		if err := m.decode(conn); err != nil {
-			log.Printf("camera setup failed for client %v: %v\n", conn, err)
-			return b, nil
-		}
-		return b, &m
-	case byte(MsgIAmDispatcher):
-		var m IAmDispatcher
-		if err := m.decode(conn); err != nil {
-			log.Printf("dipatcher setup failed for client %v: %v\n", conn, err)
-			return b, nil
-		}
-	default:
-		sendErrorAndDisconnect(conn, fmt.Sprintf("Error: It is an error for a client to send the server a message with any message type value that is not listed below with 'Client->Server': 0x%x.\n", b))
-		return 0, nil
-	}
-}
-
 func HandleConnection(conn net.Conn, events chan *Event) {
 	defer conn.Close()
 
-	// we should store the identity here to limit what messages can and can't be sent. The HandleEvent() method shouldn't have to handle disconnects for invalid behavior.
+	var clientIdentity uint8
+	var requestedHeartbeat bool
 
 	for {
-		e := Event{
-			Conn: conn,
-			Msg:  ParseMessage(conn),
+		var b uint8
+
+		if err := binary.Read(conn, binary.BigEndian, &b); err != nil {
+			log.Printf("failed to read msgType: %s", err)
+			return
 		}
 
-		events <- &e
+		switch b {
+		case byte(MsgPlate):
+			if clientIdentity != byte(MsgIAmCamera) {
+				err := "It is an error for a client that has not identified itself as a camera  to send a Plate message."
+				events <- &Event{
+					Conn: conn,
+					Msg: &ClientDisconnect{
+						clientIdentity: clientIdentity,
+						errMsg:         err,
+					},
+				}
+				log.Printf("disconnected client %v: %s", conn, err)
+				return
+			}
+			var m Plate
+			if err := m.decode(conn); err != nil {
+				log.Printf("failed to decode plate for client %v: %v", conn, err)
+				return
+			}
+		case byte(MsgWantHeartBeat):
+			if requestedHeartbeat {
+				err := "It is an error for a client to send multiple WantHeartbeat messages on a single connection"
+				events <- &Event{
+					Conn: conn,
+					Msg: &ClientDisconnect{
+						clientIdentity: clientIdentity,
+						errMsg:         err,
+					},
+				}
+				log.Printf("disconnected client %v: %s", conn, err)
+				return
+			}
+			requestedHeartbeat = true
+
+			var m WantHeartbeat
+			if err := m.decode(conn); err != nil {
+				log.Printf("heartbeat setup failed for client %v: %v", conn, err)
+				return
+			}
+
+			events <- &Event{
+				Conn: conn,
+				Msg:  &m,
+			}
+		case byte(MsgIAmCamera):
+			if clientIdentity != 0 {
+				err := "It is an error for a client that has already identified itself as either a camera or a ticket dispatcher to send an IAmCamera message."
+				events <- &Event{
+					Conn: conn,
+					Msg: &ClientDisconnect{
+						clientIdentity: clientIdentity,
+						errMsg:         err,
+					},
+				}
+				log.Printf("disconnected client %v: %s", conn, err)
+				return
+			}
+			clientIdentity = byte(MsgIAmCamera)
+
+			var m IAmCamera
+			if err := m.decode(conn); err != nil {
+				log.Printf("camera setup failed for client %v: %v\n", conn, err)
+				return
+			}
+
+			events <- &Event{
+				Conn: conn,
+				Msg:  &m,
+			}
+		case byte(MsgIAmDispatcher):
+			if clientIdentity != 0 {
+				err := "It is an error for a client that has already identified itself as either a camera or a ticket dispatcher to send an IAmCamera message."
+				events <- &Event{
+					Conn: conn,
+					Msg:  &ClientDisconnect{clientIdentity: clientIdentity, errMsg: err},
+				}
+				log.Printf("disconnected client %v: %s", conn, err)
+				return
+			}
+			clientIdentity = byte(MsgIAmDispatcher)
+
+			var m IAmDispatcher
+			if err := m.decode(conn); err != nil {
+				log.Printf("dipatcher setup failed for client %v: %v\n", conn, err)
+				return
+			}
+
+			events <- &Event{
+				Conn: conn,
+				Msg:  &m,
+			}
+		default:
+			err := fmt.Sprintf("received an invalid message type: %d from client %v", b, conn)
+			events <- &Event{
+				Conn: conn,
+				Msg: &ClientDisconnect{
+					clientIdentity: clientIdentity,
+					errMsg:         err,
+				},
+			}
+			log.Printf("disconnected client %v: %s", conn, err)
+			return
+		}
 	}
 }
 
